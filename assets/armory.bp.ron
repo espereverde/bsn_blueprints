@@ -1,0 +1,12 @@
+{
+    // Inherits a same-file reference from another file: `turrets.bp.ron`'s Path("#bullet").
+    "gunship": ( extends: "turrets.bp.ron#varied_turret" ),
+    // Blueprint references in a list: another file, a third file, this file, and frozen.
+    "arsenal": ( components: { "Arsenal": (bullets: [
+        Path("turrets.bp.ron#bullet"),
+        Path("saucers.bp.ron#turret"),
+        Path("#shell"),
+        Frozen(Path("#shell")),
+    ]) } ),
+    "shell": ( components: { "Name": "Shell", "Speed": (Range(1.0, 1000.0)) } ),
+}

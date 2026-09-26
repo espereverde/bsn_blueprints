@@ -1,0 +1,51 @@
+{
+    "turret": (
+        components: {
+            "Name": "Turret",
+            "Stats": (hp: 3, armor: 1),
+            "Speed": (Range(1.0, 2.0)),
+        },
+    ),
+    "saucer_base": (
+        components: [
+            { "Name": "Saucer", "Stats": (hp: 5, armor: 0) },
+            Maybe(0.5, { "Bounty": (gold: 10, gems: 1) }),
+        ],
+        children: {
+            // A child can extend another blueprint and patch it.
+            "turret": ( extends: "#turret", components: { "Stats": (armor: 4) } ),
+            // Or be written inline. Children can have children.
+            "light": (
+                components: { "Name": "Light", "Tint": OneOf([Gold, Grey]) },
+                children: { "bulb": ( components: { "Name": "Bulb" } ) },
+            ),
+        },
+    ),
+    // A blueprint can be a choice of blueprints.
+    "saucer": OneOf([
+        Weight(3, ( extends: "#saucer_base", components: { "Tint": Gold } )),
+        (
+            extends: "#saucer_base",
+            components: { "Tint": Custom(1) },
+            children: { "pilot": ( components: { "Name": "Pilot" } ) },
+        ),
+    ]),
+    // Extending a choice applies these changes to every option.
+    "big_saucer": (
+        extends: "#saucer",
+        components: { "Stats": (hp: 50) },
+        // Patch an inherited child by name; its other values are kept.
+        children: { "turret": ( components: { "Stats": (hp: 30) } ) },
+    ),
+    "mystery": OneOf([
+        ( extends: "#turret", components: { "Points": (1) } ),
+        ( extends: "rocks.bp.ron#rock", components: { "Stats": (armor: 9) } ),
+    ]),
+    // Random sets of components.
+    "inline_parts": ( components: [
+        { "Name": "Inline" },
+        OneOf([ { "Stats": (hp: 50) }, { "Speed": (1.0) } ]),
+        OneOf([ Weight(3, { "Tint": Gold }), { "Tint": Grey, "Points": (7) } ]),
+        Maybe(0.5, { "Bounty": (gold: 1, gems: OneOf([1, 2])) }),
+    ] ),
+}

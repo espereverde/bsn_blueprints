@@ -1,0 +1,4 @@
+{
+    // Bounty has no #[reflect(Default)], so its first appearance must be complete.
+    "bad": ( components: { "Bounty": (gold: 5) } ),
+}

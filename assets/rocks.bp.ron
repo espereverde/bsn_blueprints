@@ -1,0 +1,48 @@
+// Declared before its parent on purpose: entry order must not matter.
+{
+    "big_rock": (
+        extends: "#rock",
+        components: {
+            "Stats": (hp: 40),                // partial: armor is inherited
+            "Points": (20),
+            "Placement": (offset: (y: 5.0)),  // nested partial: offset.x and layer inherited
+        },
+    ),
+    "rock": (
+        components: {
+            "Name": "Rock",
+            "Stats": (hp: 10, armor: 2),
+            "Speed": (Range(0.5, 2.0)),
+            "Tint": Grey,
+            "Points": (5),
+            "Placement": (offset: (x: 1.0, y: 2.0), layer: 3),
+        },
+    ),
+    "lucky_rock": (
+        extends: "#big_rock",
+        components: {
+            "Stats": (armor: OneOf([1, 3, 7])),
+            "Speed": (Range(10.0, 11.0)),     // replaces the inherited range
+            "Points": (Range(100, 200)),      // integer range
+            "Tint": OneOf([Gold, Custom(3)]),
+            "Placement": (
+                facing: OneOf([Left, Right]),
+                // Partial struct options merge onto the inherited offset (x: 1.0, y: 5.0).
+                offset: OneOf([(x: 0.0, y: 0.0), (y: 9.0)]),
+            ),
+        },
+    ),
+    "steady_rock": (
+        extends: "#big_rock",
+        components: { "Speed": (3.0) },       // a fixed value cancels the inherited random speed
+    ),
+    "shielded_rock": ( components: { "Shielded": (), "Speed": (3.0) } ),
+    // Recipes: a few parameters, expanded to components by Rust code.
+    "recipe_rock": ( components: { "RockRecipe": (size: 3), "Points": (99) } ),  // Points overrides the recipe's
+    "big_recipe_rock": ( extends: "#recipe_rock", components: { "RockRecipe": (size: 10) } ),
+    "random_recipe_rock": ( components: { "RockRecipe": (size: Range(1, 4)) } ),
+    "maybe_recipe_rock": ( components: [
+        { "Name": "Maybe" },
+        OneOf([ { "RockRecipe": (size: 2) }, { "Speed": (1.0) } ]),
+    ] ),
+}

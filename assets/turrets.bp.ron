@@ -1,0 +1,15 @@
+{
+    "bullet": (
+        components: [
+            { "Name": "Bullet", "Speed": (Range(1.0, 1000.0)) },
+            OneOf([ { "Tint": Gold }, { "Points": (3) } ]),
+            Maybe(0.5, { "Bounty": (gold: 1, gems: 1) }),
+        ],
+        children: { "trail": ( components: { "Name": "Trail", "Stats": (hp: Range(1, 100000)) } ) },
+    ),
+    // Every shot is a new bullet with new random values.
+    "varied_turret": ( components: { "Ammo": (bullet: Path("#bullet")) } ),
+    // The bullet's random values are chosen once per turret: each turret fires identical bullets.
+    "steady_turret": ( components: { "Ammo": (bullet: Frozen(Path("#bullet"))) } ),
+    "steady_other_file": ( components: { "Ammo": (bullet: Frozen(Path("saucers.bp.ron#turret"))) } ),
+}

@@ -1,0 +1,3 @@
+{
+    "field_maybe": ( components: { "Stats": (hp: Maybe(0.5, 3)) } ),
+}

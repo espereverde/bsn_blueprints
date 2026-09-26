@@ -1,0 +1,11 @@
+{
+    "boss": (
+        extends: "rocks.bp.ron#big_rock",
+        components: {
+            "Name": "Boss",
+            "Tint": Custom(9),
+            "Stats": (armor: 9),
+            "Skin": (Path("red.palette.ron")),
+        },
+    ),
+}

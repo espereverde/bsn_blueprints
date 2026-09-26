@@ -1,0 +1,21 @@
+{
+    // Five fixed components.
+    "plain": ( components: {
+        "Name": "Bullet", "Speed": (500.0), "Stats": (hp: 10, armor: 2), "Tint": Gold, "Points": (3),
+    } ),
+    // Same, three of them random.
+    "random": ( components: {
+        "Name": "Bullet", "Speed": (Range(1.0, 1000.0)), "Stats": (hp: Range(1, 100), armor: 2),
+        "Tint": OneOf([Gold, Grey]), "Points": (3),
+    } ),
+    // Random values plus a OneOf set, a Maybe set and a child.
+    "full": (
+        components: [
+            { "Name": "Bullet", "Speed": (Range(1.0, 1000.0)), "Stats": (hp: Range(1, 100), armor: 2) },
+            OneOf([ { "Tint": Gold }, { "Points": (3) } ]),
+            Maybe(0.5, { "Bounty": (gold: 1, gems: 1) }),
+        ],
+        children: { "trail": ( components: { "Name": "Trail", "Stats": (hp: Range(1, 100)) } ) },
+    ),
+    "gun": ( components: { "Ammo": (bullet: Frozen(Path("#full"))) } ),
+}

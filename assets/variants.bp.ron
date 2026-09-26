@@ -1,0 +1,47 @@
+{
+    // A chosen set merges onto the base values instead of replacing the component.
+    "merged": ( components: [
+        { "Stats": (hp: 5, armor: 5) },
+        Maybe(1.0, { "Stats": (hp: 50) }),
+    ] ),
+    // A single optional component, and a value chosen among whole structs and strings.
+    "optional": ( components: {
+        "Name": OneOf(["Ann", "Bob"]),
+        "Stats": OneOf([(hp: 1, armor: 1), (hp: 2, armor: 2)]),
+        "Speed": Maybe(0.5, (1.0)),
+    } ),
+    // Random children.
+    "crew": (
+        components: { "Name": "Ship" },
+        children: {
+            "pilot": Maybe(0.5, ( components: { "Name": "Pilot" } )),
+            "gunner": OneOf([
+                ( components: { "Name": "GunnerA" } ),
+                ( components: { "Name": "GunnerB" } ),
+            ]),
+        },
+    ),
+    // A game enum whose variant is named like a wrapper: plain unless shaped like one;
+    // Fixed(..) forces the literal value.
+    "mode": ( components: { "Mode": OneOf, "Tint": Fixed(Gold) } ),
+    // Redeclaring inherited children with a wrapper replaces their randomness.
+    "fleet": (
+        children: {
+            "light": Maybe(0.5, ( components: { "Name": "Light", "Stats": (hp: 1, armor: 1) } )),
+            "lamp": ( components: { "Name": "Lamp", "Stats": (hp: 2, armor: 2) } ),
+            "radar": OneOf([ ( components: { "Name": "RadarA" } ), ( components: { "Name": "RadarB" } ) ]),
+        },
+    ),
+    "fleet_1": (
+        extends: "#fleet",
+        children: {
+            "light": Maybe(0.5, ( components: { "Stats": (armor: 9) } )),  // same chance, not 0.25; values kept
+            "lamp": Maybe(0.5, ()),                                        // a fixed child made optional
+            "radar": Maybe(0.5, ( components: { "Name": "RadarC" } )),    // an inherited OneOf is replaced
+        },
+    ),
+    // Deep chains keep the chance: no Maybe(Maybe(..)) nesting.
+    "fleet_2": ( extends: "#fleet_1", children: { "light": Maybe(0.5, ()) } ),
+    "fleet_3": ( extends: "#fleet_2", children: { "light": Maybe(0.5, ()) } ),
+    "fleet_4": ( extends: "#fleet_3", children: { "light": Maybe(0.5, ()) } ),
+}
