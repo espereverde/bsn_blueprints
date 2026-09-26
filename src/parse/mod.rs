@@ -15,12 +15,13 @@ use bevy::ecs::reflect::ReflectComponent;
 use bevy::platform::collections::HashMap;
 use bevy::reflect::{PartialReflect, TypeRegistration, TypeRegistry};
 use ron2::ast::{Expr, MapExpr, parse_document};
+use ron2::error::Span;
 
-use crate::BoxError;
 use crate::blueprint::BlueprintRef;
+use crate::error::{BlueprintError, ErrorKind};
 use crate::random::RandomSpec;
 use crate::recipe::ReflectRecipe;
-use expr::{ParseError, ParseResult, call, error, number, string};
+use expr::{ParseResult, call, error, number, string};
 use value::{Found, ValueReader};
 
 /// A blueprint, or a child, as written: an entry, or a random choice of them.
@@ -33,7 +34,8 @@ pub(crate) enum RawNode {
 /// `(extends: .., components: .., children: ..)`
 #[derive(Default)]
 pub(crate) struct RawEntry {
-    pub(crate) extends: Option<String>,
+    /// The parent, and where it is written.
+    pub(crate) extends: Option<(String, Span)>,
     /// Fixed sets of components and random ones (`OneOf` / `Maybe`), in order.
     pub(crate) items: Vec<Arc<RawItem>>,
     pub(crate) children: Vec<(String, RawNode)>,
@@ -50,6 +52,8 @@ pub(crate) enum RawItem {
 /// A (possibly partial) component value, with its random and frozen fields.
 pub(crate) struct RawComponent {
     pub(crate) type_id: TypeId,
+    /// Where the component's type is written, for errors found when it is applied.
+    pub(crate) span: Span,
     pub(crate) value: Box<dyn PartialReflect>,
     pub(crate) random: Vec<(String, RandomSpec)>,
     pub(crate) frozen: Vec<FrozenRef>,
@@ -61,14 +65,16 @@ pub(crate) struct RawComponent {
 pub(crate) struct FrozenRef {
     pub(crate) path: String,
     pub(crate) target: String,
+    pub(crate) span: Span,
 }
 
 impl RawNode {
-    /// Every blueprint this node refers to (`extends` and frozen fields), at any depth.
-    pub(crate) fn all_extends<'a>(&'a self, out: &mut Vec<&'a str>) {
+    /// Every blueprint this node refers to (`extends` and frozen fields), at any depth, with
+    /// where it is written.
+    pub(crate) fn all_extends<'a>(&'a self, out: &mut Vec<(&'a str, Span)>) {
         match self {
             RawNode::Entry(entry) => {
-                out.extend(entry.extends.as_deref());
+                out.extend(entry.extends.as_ref().map(|(extends, span)| (extends.as_str(), *span)));
                 for item in &entry.items {
                     item.all_extends(out);
                 }
@@ -83,11 +89,11 @@ impl RawNode {
 }
 
 impl RawItem {
-    fn all_extends<'a>(&'a self, out: &mut Vec<&'a str>) {
+    fn all_extends<'a>(&'a self, out: &mut Vec<(&'a str, Span)>) {
         match self {
             RawItem::Set(components) => {
                 for component in components {
-                    out.extend(component.frozen.iter().map(|f| f.target.as_str()));
+                    out.extend(component.frozen.iter().map(|f| (f.target.as_str(), f.span)));
                 }
             }
             RawItem::All(items) => items.iter().for_each(|item| item.all_extends(out)),
@@ -102,16 +108,14 @@ pub(crate) fn parse_file(
     source: &str,
     registry: &TypeRegistry,
     load_context: &mut LoadContext,
-) -> Result<HashMap<String, RawNode>, BoxError> {
-    let document = parse_document(source).map_err(|e| ParseError {
-        span: *e.span(),
-        message: e.kind().to_string(),
-    })?;
+) -> ParseResult<HashMap<String, RawNode>> {
+    let document = parse_document(source)
+        .map_err(|e| BlueprintError::new(ErrorKind::Syntax, e.kind().to_string()).at(e.span()))?;
     let Some(root) = &document.value else {
         return Ok(HashMap::default());
     };
     let Expr::Map(map) = root else {
-        return Err(error(root, "expected a map of blueprint name to blueprint").into());
+        return Err(error(ErrorKind::Syntax, root, "expected a map of blueprint name to blueprint"));
     };
     let mut reader = ValueReader {
         registry,
@@ -121,12 +125,28 @@ pub(crate) fn parse_file(
     let mut nodes = HashMap::default();
     for entry in &map.entries {
         let label = string(&entry.key)?;
+        ensure_no_maybe(label, &entry.value)?;
         let node = read_node(&entry.value, &mut reader)?;
         if nodes.insert(label.to_string(), node).is_some() {
-            return Err(error(&entry.key, format!("duplicate blueprint `{label}`")).into());
+            return Err(error(ErrorKind::Syntax, &entry.key, format!("duplicate blueprint `{label}`")));
         }
     }
     Ok(nodes)
+}
+
+/// Only children can be `Maybe(..)`: a blueprint always spawns something.
+fn ensure_no_maybe(label: &str, expr: &Expr) -> ParseResult<()> {
+    match wrapper(expr)? {
+        Wrapper::Maybe(..) => Err(error(
+            ErrorKind::Random,
+            expr,
+            format!("blueprint `{label}`: only children can be Maybe(..)"),
+        )),
+        Wrapper::OneOf(options) => options
+            .into_iter()
+            .try_for_each(|(_, option)| ensure_no_maybe(label, option)),
+        Wrapper::Plain(_) => Ok(()),
+    }
 }
 
 // ============================================================================
@@ -147,7 +167,7 @@ pub(crate) fn wrapper<'e, 'a>(expr: &'e Expr<'a>) -> ParseResult<Wrapper<'e, 'a>
         Some(("OneOf", args)) if args.len() == 1 && matches!(args[0], Expr::Seq(_)) => {
             let Expr::Seq(seq) = args[0] else { unreachable!() };
             if seq.items.is_empty() {
-                return Err(error(expr, "OneOf(..) needs at least one option"));
+                return Err(error(ErrorKind::Random, expr, "OneOf(..) needs at least one option"));
             }
             let mut options = Vec::with_capacity(seq.items.len());
             for item in &seq.items {
@@ -155,7 +175,11 @@ pub(crate) fn wrapper<'e, 'a>(expr: &'e Expr<'a>) -> ParseResult<Wrapper<'e, 'a>
                     Some(("Weight", weighted)) if weighted.len() == 2 => {
                         let weight = number(weighted[0])?;
                         if !(weight.is_finite() && weight > 0.0) {
-                            return Err(error(weighted[0], format!("weight must be positive, found {weight}")));
+                            return Err(error(
+                                ErrorKind::Random,
+                                weighted[0],
+                                format!("weight must be positive, found {weight}"),
+                            ));
                         }
                         (weight, weighted[1])
                     }
@@ -167,7 +191,11 @@ pub(crate) fn wrapper<'e, 'a>(expr: &'e Expr<'a>) -> ParseResult<Wrapper<'e, 'a>
         Some(("Maybe", args)) if args.len() == 2 => {
             let chance = number(args[0])?;
             if !(0.0..=1.0).contains(&chance) {
-                return Err(error(args[0], format!("Maybe chance must be between 0 and 1, found {chance}")));
+                return Err(error(
+                    ErrorKind::Random,
+                    args[0],
+                    format!("Maybe chance must be between 0 and 1, found {chance}"),
+                ));
             }
             Ok(Wrapper::Maybe(chance, args[1]))
         }
@@ -198,30 +226,37 @@ fn read_entry(expr: &Expr, reader: &mut ValueReader) -> ParseResult<RawEntry> {
     let fields = match expr {
         Expr::Unit(_) => &[][..],
         Expr::AnonStruct(s) => &s.fields[..],
-        _ => return Err(error(expr, "expected a blueprint: (extends: .., components: .., children: ..)")),
+        _ => {
+            return Err(error(
+                ErrorKind::Syntax,
+                expr,
+                "expected a blueprint: (extends: .., components: .., children: ..)",
+            ));
+        }
     };
     let mut entry = RawEntry::default();
     for field in fields {
         match &*field.name.name {
-            "extends" => entry.extends = Some(string(&field.value)?.to_string()),
+            "extends" => entry.extends = Some((string(&field.value)?.to_string(), *field.value.span())),
             "components" => entry.items.extend(read_items(&field.value, reader)?.into_iter().map(Arc::new)),
             "children" => {
                 let Expr::Map(map) = &field.value else {
-                    return Err(error(&field.value, "expected a map of child name to blueprint"));
+                    return Err(error(ErrorKind::Syntax, &field.value, "expected a map of child name to blueprint"));
                 };
                 for child in &map.entries {
                     let name = string(&child.key)?;
                     if entry.children.iter().any(|(n, _)| n == name) {
-                        return Err(error(&child.key, format!("duplicate child `{name}`")));
+                        return Err(error(ErrorKind::Syntax, &child.key, format!("duplicate child `{name}`")));
                     }
                     entry.children.push((name.to_string(), read_node(&child.value, reader)?));
                 }
             }
             other => {
-                return Err(ParseError {
-                    span: field.name.span,
-                    message: format!("unknown field `{other}`; expected {ENTRY_FIELDS}"),
-                });
+                return Err(BlueprintError::new(
+                    ErrorKind::Syntax,
+                    format!("unknown field `{other}`; expected {ENTRY_FIELDS}"),
+                )
+                .at(&field.name.span));
             }
         }
     }
@@ -243,7 +278,11 @@ fn read_items(expr: &Expr, reader: &mut ValueReader) -> ParseResult<Vec<RawItem>
             }
             Ok(items)
         }
-        Wrapper::Plain(other) => Err(error(other, "expected a map of components, or a list of them")),
+        Wrapper::Plain(other) => Err(error(
+            ErrorKind::Syntax,
+            other,
+            "expected a map of components, or a list of them",
+        )),
         Wrapper::OneOf(options) => Ok(vec![RawItem::OneOf(
             options
                 .into_iter()
@@ -269,12 +308,13 @@ fn read_map(map: &MapExpr, reader: &mut ValueReader) -> ParseResult<Vec<RawItem>
     let mut optional = Vec::new();
     for entry in &map.entries {
         let registration = component_registration(registry, &entry.key)?;
+        let span = *entry.key.span();
         match wrapper(&entry.value)? {
             Wrapper::Maybe(chance, value) => {
-                let component = read_component(reader, registration, value)?;
+                let component = read_component(reader, registration, value, span)?;
                 optional.push(RawItem::Maybe(chance, Box::new(RawItem::Set(vec![component]))));
             }
-            _ => set.push(read_component(reader, registration, &entry.value)?),
+            _ => set.push(read_component(reader, registration, &entry.value, span)?),
         }
     }
     let mut items = Vec::with_capacity(1 + optional.len());
@@ -289,11 +329,13 @@ fn read_component(
     reader: &mut ValueReader,
     registration: &TypeRegistration,
     expr: &Expr,
+    span: Span,
 ) -> ParseResult<RawComponent> {
     let mut found = Found::default();
     let value = reader.component(registration, expr, &mut found)?;
     Ok(RawComponent {
         type_id: registration.type_id(),
+        span,
         value,
         random: found.random,
         frozen: found.frozen,
@@ -307,9 +349,11 @@ fn component_registration<'r>(registry: &'r TypeRegistry, key: &Expr) -> ParseRe
     let registration = registry
         .get_with_type_path(name)
         .or_else(|| registry.get_with_short_type_path(name))
-        .ok_or_else(|| error(key, format!("unknown or ambiguous type `{name}`; is it registered?")))?;
+        .ok_or_else(|| {
+            error(ErrorKind::Type, key, format!("unknown or ambiguous type `{name}`; is it registered?"))
+        })?;
     if registration.data::<ReflectComponent>().is_none() && registration.data::<ReflectRecipe>().is_none() {
-        return Err(error(key, format!(
+        return Err(error(ErrorKind::Type, key, format!(
             "`{name}` is neither a component nor a recipe; add #[reflect(Component)] or #[reflect(Recipe)]"
         )));
     }

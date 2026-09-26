@@ -1,0 +1,4 @@
+{
+    // Its parent file fails to load; the error should be the parent's own.
+    "child": ( extends: "incomplete.bp.ron#bad" ),
+}

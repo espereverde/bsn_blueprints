@@ -9,6 +9,7 @@ use bevy::reflect::{GetPath, Reflect, TypeRegistry};
 use bevy::scene::{ResolvedSceneRoot, ScenePatch};
 
 use crate::blueprint::{Blueprint, BlueprintComponent, Node};
+use crate::error::{BlueprintError, ErrorKind};
 use crate::spawn::BlueprintScene;
 
 impl BlueprintComponent {
@@ -20,7 +21,8 @@ impl BlueprintComponent {
             let handle = freeze_to_scene(&frozen.node, registry, world)?;
             *value
                 .path_mut::<Handle<ScenePatch>>(frozen.path.as_str())
-                .map_err(|e| format!("frozen field `{}`: {e}", frozen.path))? = handle;
+                .map_err(|e| BlueprintError::new(ErrorKind::Reference, format!("frozen field `{}`: {e}", frozen.path)))? =
+                handle;
         }
         for blueprint_ref in &self.refs {
             blueprint_ref.fill(&mut *value, world)?;
@@ -55,7 +57,9 @@ impl Blueprint {
 /// Freezes `node` and adds it as a ready-to-spawn scene. The scene is freed when the last handle
 /// to it (normally the owner's component) is dropped.
 fn freeze_to_scene(node: &Node, registry: &TypeRegistry, world: &mut World) -> Result<Handle<ScenePatch>> {
-    let blueprint = node.choose().ok_or("a frozen blueprint can't be Maybe(..)")?;
+    let blueprint = node
+        .choose()
+        .ok_or_else(|| BlueprintError::new(ErrorKind::Random, "a frozen blueprint can't be Maybe(..)"))?;
     let frozen = Node::Fixed(Arc::new(blueprint.freeze(registry, world)?));
     let resolved = ResolvedSceneRoot::resolve(
         Box::new(BlueprintScene(frozen)),

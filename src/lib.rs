@@ -95,7 +95,7 @@
 //! every label requested before the file has loaded, so avoid requesting many that way.
 //!
 //! Files are parsed with `ron2`, which keeps every name and position, so wrappers are recognized
-//! anywhere and errors point at `line:col`. Inheritance is flattened inside the loader
+//! anywhere and errors ([`BlueprintError`]) point at `file:line:col`. Inheritance is flattened inside the loader
 //! (same-file parents in memory, other files through an immediate nested load), so resolution
 //! order of the resulting scene patches does not matter.
 
@@ -107,6 +107,7 @@ macro_rules! number_types {
 }
 
 mod blueprint;
+mod error;
 mod flatten;
 mod freeze;
 mod loader;
@@ -118,10 +119,9 @@ mod spawn;
 
 use bevy::prelude::*;
 
+pub use error::{BlueprintError, ErrorKind, Position};
 pub use loader::{BlueprintFile, BlueprintLoader};
 pub use recipe::{Recipe, ReflectRecipe};
-
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 /// Registers the `*.bp.ron` loader.
 pub struct BlueprintPlugin;

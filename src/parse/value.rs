@@ -18,6 +18,7 @@ use bevy::scene::ScenePatch;
 use ron2::ast::{Expr, StructBody, StructField};
 
 use super::expr::{ExprDeserializer, ParseResult, call, error, number, string};
+use crate::error::ErrorKind;
 use super::{FrozenRef, Wrapper, wrapper};
 use crate::blueprint::BlueprintRef;
 use crate::loader::BlueprintFile;
@@ -115,7 +116,7 @@ impl ValueReader<'_, '_> {
             && args.len() == 2
         {
             let path = random_path(expr, &at)?;
-            let spec = RandomSpec::range(number(args[0])?, number(args[1])?).map_err(|e| error(expr, e))?;
+            let spec = RandomSpec::range(number(args[0])?, number(args[1])?).map_err(|e| e.at(expr.span()))?;
             let placeholder = self.serde(args[0], registration)?;
             found.random.push((path, spec));
             return Ok(Some(placeholder));
@@ -123,6 +124,7 @@ impl ValueReader<'_, '_> {
         match wrapper(expr)? {
             Wrapper::Plain(expr) => self.plain(expr, registration, at, found).map(Some),
             Wrapper::Maybe(..) => Err(error(
+                ErrorKind::Random,
                 expr,
                 "Maybe(..) only works on components, sets of components and children; use OneOf(..) for values",
             )),
@@ -133,7 +135,7 @@ impl ValueReader<'_, '_> {
                     let mut nested = Found::default();
                     let value = self.plain(option, registration, At::unreachable(), &mut nested)?;
                     if !nested.random.is_empty() || !nested.frozen.is_empty() {
-                        return Err(error(option, "OneOf(..) options can't contain random values"));
+                        return Err(error(ErrorKind::Random, option, "OneOf(..) options can't contain random values"));
                     }
                     values.push((weight, value));
                 }
@@ -144,7 +146,7 @@ impl ValueReader<'_, '_> {
                     ReflectRef::Struct(_) | ReflectRef::TupleStruct(_) | ReflectRef::Tuple(_)
                 );
                 let placeholder = (!(partial && at.omittable)).then(|| values[0].1.to_dynamic());
-                found.random.push((path, RandomSpec::pick(values).map_err(|e| error(expr, e))?));
+                found.random.push((path, RandomSpec::pick(values).map_err(|e| e.at(expr.span()))?));
                 Ok(placeholder)
             }
         }
@@ -170,7 +172,7 @@ impl ValueReader<'_, '_> {
                         let name = &*field.name.name;
                         let Some(field_info) = info.field(name) else {
                             let expected: Vec<_> = info.field_names().to_vec();
-                            return Err(error(&field.value, format!(
+                            return Err(error(ErrorKind::Type, &field.value, format!(
                                 "no field `{name}` in `{}`; expected one of {expected:?}",
                                 info.type_path()
                             )));
@@ -189,7 +191,7 @@ impl ValueReader<'_, '_> {
                 Some(items) => {
                     let mut value = DynamicTupleStruct::default();
                     for (i, item) in items.into_iter().enumerate() {
-                        let field_info = info.field_at(i).ok_or_else(|| error(item, "too many values"))?;
+                        let field_info = info.field_at(i).ok_or_else(|| error(ErrorKind::Type, item, "too many values"))?;
                         let field_registration = lookup(self.registry, item, field_info.ty())?;
                         value.insert_boxed(self.required(item, field_registration, at.field(&i.to_string(), false), found)?);
                     }
@@ -202,7 +204,7 @@ impl ValueReader<'_, '_> {
                 Some(items) => {
                     let mut value = DynamicTuple::default();
                     for (i, item) in items.into_iter().enumerate() {
-                        let field_info = info.field_at(i).ok_or_else(|| error(item, "too many values"))?;
+                        let field_info = info.field_at(i).ok_or_else(|| error(ErrorKind::Type, item, "too many values"))?;
                         let field_registration = lookup(self.registry, item, field_info.ty())?;
                         value.insert_boxed(self.required(item, field_registration, at.field(&i.to_string(), false), found)?);
                     }
@@ -282,7 +284,7 @@ impl ValueReader<'_, '_> {
     ) -> ParseResult<Box<dyn PartialReflect>> {
         match self.read(expr, registration, at, found)? {
             Some(value) => Ok(value),
-            None => Err(error(expr, "this value can't be left out")),
+            None => Err(error(ErrorKind::Random, expr, "this value can't be left out")),
         }
     }
 
@@ -297,13 +299,13 @@ impl ValueReader<'_, '_> {
     ) -> ParseResult<Option<Box<dyn PartialReflect>>> {
         let (name, variant) = if info.type_path().starts_with("core::option::Option<") {
             let Expr::Option(option) = expr else {
-                return Err(error(expr, "expected Some(..) or None"));
+                return Err(error(ErrorKind::Type, expr, "expected Some(..) or None"));
             };
             match &option.value {
                 None => ("None", DynamicVariant::Unit),
                 Some(inner) => {
                     let Some(VariantInfo::Tuple(some)) = info.variant("Some") else {
-                        return Err(error(expr, "unexpected Option type"));
+                        return Err(error(ErrorKind::Type, expr, "unexpected Option type"));
                     };
                     let inner_registration = lookup(self.registry, expr, some.field_at(0).expect("Some has a field").ty())?;
                     let value = self.required(&inner.expr, inner_registration, at.field("0", false), found)?;
@@ -318,7 +320,7 @@ impl ValueReader<'_, '_> {
             };
             let name = &*s.name.name;
             let Some(variant_info) = info.variant(name) else {
-                return Err(error(expr, format!(
+                return Err(error(ErrorKind::Type, expr, format!(
                     "unknown variant `{name}` of `{}`; expected one of {:?}",
                     info.type_path(),
                     info.variant_names()
@@ -329,7 +331,7 @@ impl ValueReader<'_, '_> {
                 (VariantInfo::Tuple(fields), Some(StructBody::Tuple(body))) => {
                     let mut tuple = DynamicTuple::default();
                     for (i, element) in body.elements.iter().enumerate() {
-                        let field = fields.field_at(i).ok_or_else(|| error(&element.expr, "too many values"))?;
+                        let field = fields.field_at(i).ok_or_else(|| error(ErrorKind::Type, &element.expr, "too many values"))?;
                         let field_registration = lookup(self.registry, &element.expr, field.ty())?;
                         tuple.insert_boxed(self.required(&element.expr, field_registration, at.field(&i.to_string(), false), found)?);
                     }
@@ -340,7 +342,7 @@ impl ValueReader<'_, '_> {
                     for field in &body.fields {
                         let field_name = &*field.name.name;
                         let field_info = fields.field(field_name).ok_or_else(|| {
-                            error(&field.value, format!("no field `{field_name}` in variant `{name}`"))
+                            error(ErrorKind::Type, &field.value, format!("no field `{field_name}` in variant `{name}`"))
                         })?;
                         let field_registration = lookup(self.registry, &field.value, field_info.ty())?;
                         if let Some(v) = self.read(&field.value, field_registration, at.field(field_name, true), found)? {
@@ -349,7 +351,7 @@ impl ValueReader<'_, '_> {
                     }
                     DynamicVariant::Struct(value)
                 }
-                _ => return Err(error(expr, format!("wrong shape for variant `{name}`"))),
+                _ => return Err(error(ErrorKind::Type, expr, format!("wrong shape for variant `{name}`"))),
             };
             (name, variant)
         };
@@ -382,7 +384,7 @@ impl ValueReader<'_, '_> {
                     if let Some(field) = &at.path {
                         let file = self.load_context.load::<BlueprintFile>(path.without_label().into_owned());
                         let blueprint = BlueprintRef::new(field.clone(), file, label.to_string())
-                            .map_err(|e| error(expr, e))?;
+                            .map_err(|e| e.at(expr.span()))?;
                         found.refs.push(blueprint);
                         return Ok(Box::new(Handle::<ScenePatch>::default()));
                     }
@@ -392,30 +394,31 @@ impl ValueReader<'_, '_> {
             }
             Some(("Frozen", args)) if args.len() == 1 => {
                 if !is_blueprint {
-                    return Err(error(expr, "Frozen(..) only works on Handle<ScenePatch> fields"));
+                    return Err(error(ErrorKind::Reference, expr, "Frozen(..) only works on Handle<ScenePatch> fields"));
                 }
                 let target = match call(args[0]) {
                     Some(("Path", path)) if path.len() == 1 => path[0],
-                    _ => return Err(error(args[0], "expected Frozen(Path(\"file.bp.ron#label\"))")),
+                    _ => return Err(error(ErrorKind::Reference, args[0], "expected Frozen(Path(\"file.bp.ron#label\"))")),
                 };
                 let path = at
                     .path
                     .clone()
-                    .ok_or_else(|| error(expr, "Frozen(..) can't go inside maps or OneOf options"))?;
+                    .ok_or_else(|| error(ErrorKind::Reference, expr, "Frozen(..) can't go inside maps or OneOf options"))?;
                 found.frozen.push(FrozenRef {
                     path,
                     target: string(target)?.to_string(),
+                    span: *target.span(),
                 });
                 // The field gets its frozen copy on spawn.
                 Ok(Box::new(Handle::<ScenePatch>::default()))
             }
-            _ => Err(error(expr, "expected Path(\"..\")")),
+            _ => Err(error(ErrorKind::Reference, expr, "expected Path(\"..\")")),
         }
     }
 
     /// An asset path, relative to this file.
     fn resolve(&self, expr: &Expr) -> ParseResult<AssetPath<'static>> {
-        let path = AssetPath::try_parse(string(expr)?).map_err(|e| error(expr, e.to_string()))?;
+        let path = AssetPath::try_parse(string(expr)?).map_err(|e| error(ErrorKind::Reference, expr, e.to_string()))?;
         Ok(self.here.resolve_embed(&path))
     }
 
@@ -423,12 +426,12 @@ impl ValueReader<'_, '_> {
     fn serde(&self, expr: &Expr, registration: &TypeRegistration) -> ParseResult<Box<dyn PartialReflect>> {
         let type_path = registration.type_info().type_path();
         let Some(deserialize) = registration.data::<ReflectDeserialize>() else {
-            return Err(error(expr, format!("wrong shape for `{type_path}`")));
+            return Err(error(ErrorKind::Type, expr, format!("wrong shape for `{type_path}`")));
         };
         deserialize
             .deserialize(ExprDeserializer(expr))
             .map(|value| value.into_partial_reflect())
-            .map_err(|e| error(expr, format!("`{type_path}`: {e}")))
+            .map_err(|e| error(ErrorKind::Type, expr, format!("`{type_path}`: {e}")))
     }
 
 }
@@ -436,14 +439,14 @@ impl ValueReader<'_, '_> {
 fn lookup<'r>(registry: &'r TypeRegistry, expr: &Expr, ty: &Type) -> ParseResult<&'r TypeRegistration> {
     registry
         .get(ty.id())
-        .ok_or_else(|| error(expr, format!("type `{}` is not registered", ty.path())))
+        .ok_or_else(|| error(ErrorKind::Type, expr, format!("type `{}` is not registered", ty.path())))
 }
 
 fn random_path(expr: &Expr, at: &At) -> ParseResult<String> {
     at.path
         .clone()
         .filter(|_| at.random_ok)
-        .ok_or_else(|| error(expr, "random values can't go inside lists, maps or OneOf options"))
+        .ok_or_else(|| error(ErrorKind::Random, expr, "random values can't go inside lists, maps or OneOf options"))
 }
 
 /// The fields of `(a: ..)` or `Name(a: ..)`; `()` has none.

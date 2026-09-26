@@ -10,7 +10,7 @@ use bevy::reflect::{GetPath, ParsedPath, PartialReflect, Reflect, ReflectFromRef
 use bevy::scene::ScenePatch;
 use rand::Rng;
 
-use crate::BoxError;
+use crate::error::{BlueprintError, ErrorKind};
 use crate::loader::BlueprintFile;
 use crate::parse::RawItem;
 use crate::random::{RandomField, RandomSpec, choose_weighted};
@@ -51,15 +51,15 @@ impl Node {
     /// The same choice, with `f` applied to each blueprint in it.
     pub(crate) fn map(
         &self,
-        f: &mut impl FnMut(&Blueprint) -> Result<Blueprint, BoxError>,
-    ) -> Result<Node, BoxError> {
+        f: &mut impl FnMut(&Blueprint) -> Result<Blueprint, BlueprintError>,
+    ) -> Result<Node, BlueprintError> {
         Ok(match self {
             Node::Fixed(blueprint) => Node::Fixed(Arc::new(f(blueprint)?)),
             Node::OneOf(options) => Node::OneOf(
                 options
                     .iter()
                     .map(|(weight, node)| Ok((*weight, node.map(f)?)))
-                    .collect::<Result<Vec<_>, BoxError>>()?
+                    .collect::<Result<Vec<_>, BlueprintError>>()?
                     .into(),
             ),
             Node::Maybe(maybe) => Node::Maybe(Arc::new((maybe.0, maybe.1.map(f)?))),
@@ -126,8 +126,9 @@ pub(crate) struct BlueprintRef {
 }
 
 impl BlueprintRef {
-    pub(crate) fn new(path: String, file: Handle<BlueprintFile>, label: String) -> Result<Self, String> {
-        let parsed = ParsedPath::parse(&path).map_err(|e| format!("field `{path}`: {e}"))?;
+    pub(crate) fn new(path: String, file: Handle<BlueprintFile>, label: String) -> Result<Self, BlueprintError> {
+        let parsed = ParsedPath::parse(&path)
+            .map_err(|e| BlueprintError::new(ErrorKind::Reference, format!("field `{path}`: {e}")))?;
         Ok(Self {
             path,
             parsed: Arc::new(parsed),
@@ -137,22 +138,23 @@ impl BlueprintRef {
     }
 
     /// Sets the field in `value` to the referred blueprint.
-    pub(crate) fn fill(&self, value: &mut dyn Reflect, world: &World) -> Result<(), BoxError> {
+    pub(crate) fn fill(&self, value: &mut dyn Reflect, world: &World) -> Result<(), BlueprintError> {
+        let error = |message| BlueprintError::new(ErrorKind::Reference, message);
         let scene = world
             .resource::<Assets<BlueprintFile>>()
             .get(&self.file)
             .and_then(|file| file.get(&self.label))
-            .ok_or_else(|| format!("no blueprint `{}` in {:?}", self.label, self.file.path()))?;
+            .ok_or_else(|| error(format!("no blueprint `{}` in {:?}", self.label, self.file.path())))?;
         *value
             .path_mut::<Handle<ScenePatch>>(&*self.parsed)
-            .map_err(|e| format!("field `{}`: {e}", self.path))? = scene.clone();
+            .map_err(|e| error(format!("field `{}`: {e}", self.path)))? = scene.clone();
         Ok(())
     }
 }
 
 impl BlueprintComponent {
     /// A copy of the value with every random field sampled.
-    pub(crate) fn sample(&self, registry: &TypeRegistry) -> Result<Box<dyn Reflect>, BoxError> {
+    pub(crate) fn sample(&self, registry: &TypeRegistry) -> Result<Box<dyn Reflect>, BlueprintError> {
         let mut value = clone_value(registry, &*self.value)?;
         for random in &self.random {
             random.apply(&mut *value)?;
@@ -177,10 +179,13 @@ impl Blueprint {
         registry: &TypeRegistry,
         type_id: TypeId,
         patch: &dyn PartialReflect,
-    ) -> Result<(), BoxError> {
-        let registration = registry.get(type_id).ok_or("unregistered component type")?;
+    ) -> Result<(), BlueprintError> {
+        let error = |message: String| BlueprintError::new(ErrorKind::Type, message);
+        let registration = registry
+            .get(type_id)
+            .ok_or_else(|| error("unregistered component type".into()))?;
         let type_path = registration.type_info().type_path();
-        let patch_error = |e| format!("`{type_path}`: {e}");
+        let patch_error = |e| error(format!("`{type_path}`: {e}"));
 
         if let Some(component) = self.component_mut(type_id) {
             component.clear_fields(&leaf_paths(patch));
@@ -198,10 +203,12 @@ impl Blueprint {
             }
             None => registration
                 .data::<ReflectFromReflect>()
-                .ok_or_else(|| format!("`{type_path}` needs #[reflect(Default)] or FromReflect"))?
+                .ok_or_else(|| error(format!("`{type_path}` needs #[reflect(Default)] or FromReflect")))?
                 .from_reflect(patch)
                 .ok_or_else(|| {
-                    format!("`{type_path}` is incomplete; add #[reflect(Default)] to allow partial values")
+                    error(format!(
+                        "`{type_path}` is incomplete; add #[reflect(Default)] to allow partial values"
+                    ))
                 })?,
         };
         self.components.push(BlueprintComponent {
@@ -223,7 +230,10 @@ impl Blueprint {
         type_id: TypeId,
         path: &str,
         spec: &RandomSpec,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), BlueprintError> {
+        let error = |e: &dyn std::fmt::Display| {
+            BlueprintError::new(ErrorKind::Random, format!("random field `{path}`: {e}"))
+        };
         let component = self.field_component(registry, type_id, path)?;
         component.clear_fields(&[path.to_string()]);
         let spec = match spec {
@@ -234,14 +244,12 @@ impl Blueprint {
                 } else {
                     (*component.value)
                         .reflect_path(path)
-                        .map_err(|e| format!("random field `{path}`: {e}"))?
+                        .map_err(|e| error(&e))?
                 };
                 let mut whole = Vec::with_capacity(options.len());
                 for (weight, option) in options {
                     let mut value = current.to_dynamic();
-                    value
-                        .try_apply(&**option)
-                        .map_err(|e| format!("random field `{path}`: {e}"))?;
+                    value.try_apply(&**option).map_err(|e| error(&e))?;
                     whole.push((*weight, value));
                 }
                 RandomSpec::Pick(whole)
@@ -257,7 +265,7 @@ impl Blueprint {
         registry: &TypeRegistry,
         type_id: TypeId,
         field: FrozenField,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), BlueprintError> {
         let component = self.field_component(registry, type_id, &field.path)?;
         component.clear_fields(std::slice::from_ref(&field.path));
         component.frozen.push(field);
@@ -270,19 +278,20 @@ impl Blueprint {
         registry: &TypeRegistry,
         type_id: TypeId,
         field: BlueprintRef,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), BlueprintError> {
         let component = self.field_component(registry, type_id, &field.path)?;
         component.clear_fields(std::slice::from_ref(&field.path));
         component.refs.push(field);
         Ok(())
     }
 
-    /// Samples every random field once, so bad paths and types fail at load time, not at spawn.
-    pub(crate) fn validate_random(&self, registry: &TypeRegistry) -> Result<(), BoxError> {
-        for component in self.components.iter().filter(|c| !c.random.is_empty()) {
-            component.sample(registry)?;
+    /// Samples the random fields of a component once, so bad paths and types fail at load time,
+    /// not at spawn. The sample is thrown away.
+    pub(crate) fn validate_random(&self, registry: &TypeRegistry, type_id: TypeId) -> Result<(), BlueprintError> {
+        match self.components.iter().find(|c| c.type_id == type_id) {
+            Some(component) if !component.random.is_empty() => component.sample(registry).map(drop),
+            _ => Ok(()),
         }
-        Ok(())
     }
 
     fn referenced_files(&self, out: &mut Vec<UntypedHandle>) {
@@ -319,10 +328,13 @@ impl Blueprint {
         registry: &TypeRegistry,
         type_id: TypeId,
         path: &str,
-    ) -> Result<&mut BlueprintComponent, BoxError> {
+    ) -> Result<&mut BlueprintComponent, BlueprintError> {
         self.component_mut(type_id).ok_or_else(|| {
             let type_path = registry.get(type_id).map_or("?", |r| r.type_info().type_path());
-            format!("field `{path}` of `{type_path}`: the blueprint has no such component").into()
+            BlueprintError::new(
+                ErrorKind::Type,
+                format!("field `{path}` of `{type_path}`: the blueprint has no such component"),
+            )
         })
     }
 

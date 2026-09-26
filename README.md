@@ -8,7 +8,7 @@ Each blueprint becomes a regular Bevy scene (`ScenePatch`), so it spawns through
 API and can be used from `bsn!`.
 
 > **Status: spike.** Everything described here works and is covered by tests, but the crate is
-> not a polished library yet: the API is minimal, errors are boxed strings, and it lives in
+> not a polished library yet: the API is minimal, and it lives in
 > `spikes/` of Lunar Watch. See [`PLAN.md`](PLAN.md) for the road to the real `bevy_blueprints`.
 
 ---
@@ -348,15 +348,35 @@ value of that component as a whole (field-level merging only happens inside blue
 
 ## Errors
 
-Load errors point at the exact position and say what is expected:
+Load errors name the file and position, and say what is expected:
 
 ```
-3:24: unknown or ambiguous type `Nope`; is it registered?
-2:49: no field `colour` in `game::Stats`; expected one of ["hp", "armor"]
-4:32: unknown variant `Purple` of `game::Tint`; expected one of ["Grey", "Gold", "Custom"]
-1:38: `u32`: invalid type: floating point `2.5`, expected u32
-2:50: Maybe(..) only works on components, sets of components and children; use OneOf(..) for values
-inheritance cycle in rocks.bp.ron: a -> b -> a
+enemies.bp.ron:3:24: unknown or ambiguous type `Nope`; is it registered?
+enemies.bp.ron:2:49: no field `colour` in `game::Stats`; expected one of ["hp", "armor"]
+enemies.bp.ron:4:32: unknown variant `Purple` of `game::Tint`; expected one of ["Grey", "Gold", "Custom"]
+enemies.bp.ron:1:38: `u32`: invalid type: floating point `2.5`, expected u32
+enemies.bp.ron:2:50: Maybe(..) only works on components, sets of components and children; use OneOf(..) for values
+rocks.bp.ron:3:21: inheritance cycle in rocks.bp.ron: a -> b -> a
+```
+
+Errors found after parsing (inheritance, incomplete components, missing blueprints) point at
+what caused them: the `extends`, the `Frozen(..)` path, or the component's name. If a parent file
+fails to load, a file that extends it reports the parent's own error, located in the parent.
+
+The loader's error type is `BlueprintError`, with `kind()` (`Read`, `Syntax`, `Type`, `Random`,
+`Inheritance`, `Reference`), `file()`, `position()` and `message()`. Bevy's asset server wraps it;
+to get it back from a failed load:
+
+```rust
+use bevy::asset::{AssetLoadError, LoadState};
+use bsn_blueprints::BlueprintError;
+
+if let LoadState::Failed(error) = asset_server.load_state(&handle)
+    && let AssetLoadError::AssetLoaderError(error) = &*error
+    && let Some(error) = error.error().downcast_ref::<BlueprintError>()
+{
+    warn!("{:?} at {:?}: {}", error.kind(), error.position(), error.message());
+}
 ```
 
 Random fields are test-sampled once at load time, so bad paths and types fail when loading, not
@@ -436,7 +456,8 @@ children): about 100–140 µs per blueprint. A 3.5 MB file with 5,000 blueprint
 | `loader.rs` | `BlueprintLoader`, `BlueprintFile` (+ `get`/`labels`), loading parent files once, labeled scenes and their dependencies. |
 | `parse/mod.rs` | Raw structure (`RawNode`, `RawEntry`, `RawItem`, `RawComponent`), wrapper recognition (`OneOf`/`Maybe`/`Fixed`/`Weight`), entries, components. |
 | `parse/value.rs` | `ValueReader`: builds partial reflected values from the tree with the registry; records random / frozen / reference fields by path; handle fields. |
-| `parse/expr.rs` | `ron2` helpers, `ParseError` (`line:col: message`), serde `Deserializer` over expressions for leaf values. |
+| `parse/expr.rs` | `ron2` helpers, positioned errors, serde `Deserializer` over expressions for leaf values. |
+| `error.rs` | `BlueprintError`, `ErrorKind`, `Position`. |
 | `flatten.rs` | Inheritance: nodes, children (incl. the wrapper redeclaration rule), random sets resolved per blueprint, cycles. |
 | `blueprint.rs` | `Node`, `Blueprint`, `Part`/`PartOption`, `BlueprintComponent`, patching, random/frozen/ref fields, referenced files. |
 | `random.rs` | `RandomSpec`, `RandomField` (pre-parsed paths), weighted choice, numeric ranges. |

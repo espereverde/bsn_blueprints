@@ -2,19 +2,19 @@
 
 use bevy::reflect::{PartialReflect, Reflect, ReflectFromReflect, ReflectRef, TypeRegistry};
 
-use crate::BoxError;
+use crate::error::{BlueprintError, ErrorKind};
 
 pub(crate) fn clone_value(
     registry: &TypeRegistry,
     value: &dyn Reflect,
-) -> Result<Box<dyn Reflect>, BoxError> {
+) -> Result<Box<dyn Reflect>, BlueprintError> {
     if let Ok(clone) = value.reflect_clone() {
         return Ok(clone);
     }
     registry
         .get_type_data::<ReflectFromReflect>(value.type_id())
         .and_then(|from_reflect| from_reflect.from_reflect(value.as_partial_reflect()))
-        .ok_or_else(|| format!("cannot clone `{}`", value.reflect_type_path()).into())
+        .ok_or_else(|| BlueprintError::new(ErrorKind::Type, format!("cannot clone `{}`", value.reflect_type_path())))
 }
 
 /// The fields of a struct, tuple struct or tuple, with their path segments (`name` or index).

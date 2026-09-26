@@ -8,38 +8,16 @@ use std::fmt;
 
 use ron2::Value;
 use ron2::ast::{Expr, StructBody, expr_to_value};
-use ron2::error::Span;
 use ron2::value::Number;
 use serde::de::{self, DeserializeSeed, IntoDeserializer, Visitor};
 
-/// An error at a position in the file.
-pub(crate) struct ParseError {
-    pub(crate) span: Span,
-    pub(crate) message: String,
-}
+use crate::error::{BlueprintError, ErrorKind};
 
-impl fmt::Display for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}: {}", self.span.start.line, self.span.start.col, self.message)
-    }
-}
+pub(crate) type ParseResult<T> = Result<T, BlueprintError>;
 
-// Bevy reports loader errors with `Debug`; keep them readable there too.
-impl fmt::Debug for ParseError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        fmt::Display::fmt(self, f)
-    }
-}
-
-impl std::error::Error for ParseError {}
-
-pub(crate) type ParseResult<T> = Result<T, ParseError>;
-
-pub(crate) fn error(expr: &Expr, message: impl Into<String>) -> ParseError {
-    ParseError {
-        span: *expr.span(),
-        message: message.into(),
-    }
+/// An error at `expr`.
+pub(crate) fn error(kind: ErrorKind, expr: &Expr, message: impl Into<String>) -> BlueprintError {
+    BlueprintError::new(kind, message).at(expr.span())
 }
 
 /// `Name(a, b, ..)`: the name and the positional arguments, if `expr` has that form.
@@ -59,14 +37,14 @@ pub(crate) fn call<'e, 'a>(expr: &'e Expr<'a>) -> Option<(&'e str, Vec<&'e Expr<
 pub(crate) fn string<'e>(expr: &'e Expr) -> ParseResult<&'e str> {
     match expr {
         Expr::String(s) => Ok(&s.value),
-        _ => Err(error(expr, "expected a string")),
+        _ => Err(error(ErrorKind::Syntax, expr, "expected a string")),
     }
 }
 
 pub(crate) fn number(expr: &Expr) -> ParseResult<f64> {
     match expr_to_value(expr) {
         Ok(Value::Number(n)) => Ok(n.into_f64()),
-        _ => Err(error(expr, "expected a number")),
+        _ => Err(error(ErrorKind::Syntax, expr, "expected a number")),
     }
 }
 

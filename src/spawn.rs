@@ -13,6 +13,7 @@ use bevy::scene::{ResolveContext, ResolveSceneError, ResolvedScene, Scene};
 use rand::Rng;
 
 use crate::blueprint::{Blueprint, BlueprintComponent, Node, Part};
+use crate::error::{BlueprintError, ErrorKind};
 use crate::random::choose_weighted;
 
 /// The [`Scene`] stored in each labeled `ScenePatch`.
@@ -190,14 +191,17 @@ fn insert_components(
         let value = value_of(component, entity)?;
         // The pointer handed to `insert_by_ids` must be the component type itself.
         if value.as_any().type_id() != component.type_id {
-            return Err(format!("`{}` did not clone to its concrete type", value.reflect_type_path()).into());
+            let message = format!("`{}` did not clone to its concrete type", value.reflect_type_path());
+            return Err(BlueprintError::new(ErrorKind::Type, message).into());
         }
         let id = match entity.world().components().get_id(component.type_id) {
             Some(id) => id,
             None => {
                 let reflect_component = registry
                     .get_type_data::<ReflectComponent>(component.type_id)
-                    .ok_or("blueprint component lost its ReflectComponent registration")?;
+                    .ok_or_else(|| {
+                        BlueprintError::new(ErrorKind::Type, "blueprint component lost its ReflectComponent registration")
+                    })?;
                 entity.world_scope(|world| reflect_component.register_component(world))
             }
         };

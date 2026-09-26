@@ -3,6 +3,8 @@
 use bevy::prelude::*;
 use bevy::reflect::FromType;
 
+use crate::error::{BlueprintError, ErrorKind};
+
 /// A set of components built in Rust from a few parameters.
 ///
 /// Written in a blueprint's `components` like a component (`"RockRecipe": (size: 3)`), with
@@ -37,7 +39,8 @@ impl ReflectRecipe {
         if (self.insert)(recipe, entity) {
             Ok(())
         } else {
-            Err(format!("`{}` is not the recipe type", recipe.reflect_type_path()).into())
+            let message = format!("`{}` is not the recipe type", recipe.reflect_type_path());
+            Err(BlueprintError::new(ErrorKind::Type, message).into())
         }
     }
 }

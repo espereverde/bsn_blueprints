@@ -1,15 +1,16 @@
 //! The `*.bp.ron` asset loader.
 
 use bevy::asset::io::Reader;
-use bevy::asset::{AssetLoader, AssetPath, LoadContext};
+use bevy::asset::{AssetLoadError, AssetLoader, AssetPath, LoadContext, LoadDirectError};
 use bevy::ecs::reflect::AppTypeRegistry;
 use bevy::platform::collections::HashMap;
 use bevy::prelude::*;
 use bevy::reflect::TypeRegistryArc;
 use bevy::scene::ScenePatch;
+use ron2::error::Span;
 
-use crate::BoxError;
 use crate::blueprint::Node;
+use crate::error::{BlueprintError, ErrorKind};
 use crate::flatten::Flattener;
 use crate::parse::{RawNode, parse_file};
 use crate::spawn::BlueprintScene;
@@ -55,23 +56,41 @@ impl FromWorld for BlueprintLoader {
 impl AssetLoader for BlueprintLoader {
     type Asset = BlueprintFile;
     type Settings = ();
-    type Error = BoxError;
+    type Error = BlueprintError;
 
     async fn load(
         &self,
         reader: &mut dyn Reader,
         _settings: &Self::Settings,
         load_context: &mut LoadContext<'_>,
-    ) -> Result<BlueprintFile, BoxError> {
+    ) -> Result<BlueprintFile, BlueprintError> {
+        let here = load_context.path().clone_owned();
+        self.load_file(reader, &here, load_context)
+            .await
+            .map_err(|e| e.in_file(&here))
+    }
+
+    fn extensions(&self) -> &[&str] {
+        &["bp.ron"]
+    }
+}
+
+impl BlueprintLoader {
+    async fn load_file(
+        &self,
+        reader: &mut dyn Reader,
+        here: &AssetPath<'static>,
+        load_context: &mut LoadContext<'_>,
+    ) -> Result<BlueprintFile, BlueprintError> {
+        let read_error = |e: &dyn std::fmt::Display| BlueprintError::new(ErrorKind::Read, e.to_string());
         let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).await?;
+        reader.read_to_end(&mut bytes).await.map_err(|e| read_error(&e))?;
 
         // Handle fields (`Path("image.png")`) become handles and dependencies of this file.
-        let source = String::from_utf8(bytes)?;
+        let source = String::from_utf8(bytes).map_err(|e| read_error(&e))?;
         let raw = parse_file(&source, &self.registry.read(), load_context)?;
-        let here = load_context.path().clone_owned();
-        let parent_files = load_parent_files(&raw, &here, load_context).await?;
-        let entries = Flattener::new(&here, &raw, &parent_files, &self.registry.read()).flatten_all()?;
+        let parent_files = load_parent_files(&raw, here, load_context).await?;
+        let entries = Flattener::new(here, &raw, &parent_files, &self.registry.read()).flatten_all()?;
 
         let mut scenes = HashMap::default();
         for (label, node) in &entries {
@@ -90,10 +109,6 @@ impl AssetLoader for BlueprintLoader {
         }
         Ok(BlueprintFile { entries, scenes })
     }
-
-    fn extensions(&self) -> &[&str] {
-        &["bp.ron"]
-    }
 }
 
 /// Loads the other blueprint files that parents live in. They become loader dependencies, so
@@ -102,21 +117,40 @@ async fn load_parent_files(
     raw: &HashMap<String, RawNode>,
     here: &AssetPath<'static>,
     load_context: &mut LoadContext<'_>,
-) -> Result<HashMap<AssetPath<'static>, BlueprintFile>, BoxError> {
+) -> Result<HashMap<AssetPath<'static>, BlueprintFile>, BlueprintError> {
     let mut all_extends = Vec::new();
     for entry in raw.values() {
         entry.all_extends(&mut all_extends);
     }
     let mut files = HashMap::default();
-    for extends in all_extends {
-        let file = here.resolve_embed_str(extends)?.without_label().into_owned();
+    for (extends, span) in all_extends {
+        let file = here
+            .resolve_embed_str(extends)
+            .map_err(|e| BlueprintError::new(ErrorKind::Inheritance, e.to_string()).at(&span))?
+            .without_label()
+            .into_owned();
         if file.path() != here.path() && !files.contains_key(&file) {
             let loaded = load_context
                 .load_builder()
                 .load_value::<BlueprintFile>(file.clone())
-                .await?;
+                .await
+                .map_err(|e| parent_error(e, &span))?;
             files.insert(file, loaded.take());
         }
     }
     Ok(files)
+}
+
+/// The error of a parent file that failed to load: its own [`BlueprintError`] (located in that
+/// file) when it has one, else Bevy's, placed at the reference to it.
+fn parent_error(error: LoadDirectError, span: &Span) -> BlueprintError {
+    if let LoadDirectError::LoadError {
+        error: AssetLoadError::AssetLoaderError(error),
+        ..
+    } = &error
+        && let Some(error) = error.error().downcast_ref::<BlueprintError>()
+    {
+        return error.clone();
+    }
+    BlueprintError::new(ErrorKind::Inheritance, error.to_string()).at(span)
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bevy::reflect::{GetPath, ParsedPath, PartialReflect, Reflect};
 use rand::Rng;
 
-use crate::BoxError;
+use crate::error::{BlueprintError, ErrorKind};
 
 /// How a random field gets its value.
 pub(crate) enum RandomSpec {
@@ -17,16 +17,16 @@ pub(crate) enum RandomSpec {
 }
 
 impl RandomSpec {
-    pub(crate) fn range(min: f64, max: f64) -> Result<Self, String> {
+    pub(crate) fn range(min: f64, max: f64) -> Result<Self, BlueprintError> {
         if min > max {
-            return Err(format!("Range({min}, {max}): min > max"));
+            return Err(BlueprintError::new(ErrorKind::Random, format!("Range({min}, {max}): min > max")));
         }
         Ok(Self::Range(min, max))
     }
 
-    pub(crate) fn pick(options: Vec<(f64, Box<dyn PartialReflect>)>) -> Result<Self, String> {
+    pub(crate) fn pick(options: Vec<(f64, Box<dyn PartialReflect>)>) -> Result<Self, BlueprintError> {
         if options.is_empty() {
-            return Err("OneOf(..) needs at least one option".into());
+            return Err(BlueprintError::new(ErrorKind::Random, "OneOf(..) needs at least one option"));
         }
         Ok(Self::Pick(options))
     }
@@ -44,12 +44,12 @@ pub(crate) struct RandomField {
 
 impl RandomField {
     /// `spec` must hold whole values for the field (see `Blueprint::set_random`).
-    pub(crate) fn new(path: String, spec: RandomSpec) -> Result<Self, String> {
+    pub(crate) fn new(path: String, spec: RandomSpec) -> Result<Self, BlueprintError> {
         let parsed = match path.as_str() {
             "" => None,
-            path => Some(Arc::new(
-                ParsedPath::parse(path).map_err(|e| format!("random field `{path}`: {e}"))?,
-            )),
+            path => Some(Arc::new(ParsedPath::parse(path).map_err(|e| {
+                BlueprintError::new(ErrorKind::Random, format!("random field `{path}`: {e}"))
+            })?)),
         };
         Ok(Self {
             path,
@@ -59,8 +59,8 @@ impl RandomField {
     }
 
     /// Sets the field in `component` to a new random value.
-    pub(crate) fn apply(&self, component: &mut dyn Reflect) -> Result<(), BoxError> {
-        let error = |e: &dyn Display| format!("random field `{}`: {e}", self.path);
+    pub(crate) fn apply(&self, component: &mut dyn Reflect) -> Result<(), BlueprintError> {
+        let error = |e: &dyn Display| BlueprintError::new(ErrorKind::Random, format!("random field `{}`: {e}", self.path));
         let field = match &self.parsed {
             None => component.as_partial_reflect_mut(),
             Some(parsed) => component.reflect_path_mut(&**parsed).map_err(|e| error(&e))?,

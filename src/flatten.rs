@@ -5,9 +5,10 @@ use std::sync::Arc;
 use bevy::asset::AssetPath;
 use bevy::platform::collections::HashMap;
 use bevy::reflect::TypeRegistry;
+use ron2::error::Span;
 
-use crate::BoxError;
 use crate::blueprint::{Blueprint, FrozenField, Node, Part, PartOption};
+use crate::error::{BlueprintError, ErrorKind};
 use crate::loader::BlueprintFile;
 use crate::parse::{RawComponent, RawEntry, RawItem, RawNode};
 
@@ -38,7 +39,7 @@ impl<'a> Flattener<'a> {
     }
 
     /// Flattens every blueprint of the file.
-    pub(crate) fn flatten_all(mut self) -> Result<HashMap<String, Node>, BoxError> {
+    pub(crate) fn flatten_all(mut self) -> Result<HashMap<String, Node>, BlueprintError> {
         let raw = self.raw;
         for label in raw.keys() {
             self.flatten(label)?;
@@ -46,23 +47,18 @@ impl<'a> Flattener<'a> {
         Ok(self.done)
     }
 
-    /// Flattens a blueprint of this file (memoized, with cycle detection).
-    fn flatten(&mut self, label: &str) -> Result<Node, BoxError> {
+    /// Flattens a blueprint of this file (memoized, with cycle detection). `label` must exist.
+    fn flatten(&mut self, label: &str) -> Result<Node, BlueprintError> {
         if let Some(done) = self.done.get(label) {
             return Ok(done.clone());
         }
         if self.visiting.iter().any(|l| l == label) {
-            return Err(format!(
-                "inheritance cycle in {}: {} -> {label}",
-                self.here,
-                self.visiting.join(" -> ")
-            )
-            .into());
+            return Err(BlueprintError::new(
+                ErrorKind::Inheritance,
+                format!("inheritance cycle in {}: {} -> {label}", self.here, self.visiting.join(" -> ")),
+            ));
         }
-        let raw = self
-            .raw
-            .get(label)
-            .ok_or_else(|| format!("no blueprint `{label}` in {}", self.here))?;
+        let raw = &self.raw[label];
 
         // Still "visiting" while children are built, so a child extending one of its own
         // ancestors is reported as a cycle.
@@ -70,7 +66,6 @@ impl<'a> Flattener<'a> {
         let node = self.build_node(raw, None)?;
         self.visiting.pop();
 
-        ensure_no_maybe(&node).map_err(|e| format!("blueprint `{label}`: {e}"))?;
         self.done.insert(label.to_string(), node.clone());
         Ok(node)
     }
@@ -81,11 +76,11 @@ impl<'a> Flattener<'a> {
     /// A plain entry applies its changes to every option of an inherited `OneOf` / `Maybe`. A
     /// `OneOf` / `Maybe` replaces the inherited randomness instead: its options build on the
     /// inherited child without its `Maybe`s, or on nothing if that child is a `OneOf`.
-    fn build_node(&mut self, raw: &RawNode, inherited: Option<&Node>) -> Result<Node, BoxError> {
+    fn build_node(&mut self, raw: &RawNode, inherited: Option<&Node>) -> Result<Node, BlueprintError> {
         Ok(match raw {
             RawNode::Entry(entry) => {
                 let base = match &entry.extends {
-                    Some(extends) => self.resolve_extends(extends)?,
+                    Some((extends, span)) => self.resolve_blueprint(extends, span, ErrorKind::Inheritance)?,
                     None => inherited.cloned().unwrap_or_else(|| Node::Fixed(Arc::default())),
                 };
                 base.map(&mut |blueprint| self.build_entry(entry, blueprint.clone()))?
@@ -96,7 +91,7 @@ impl<'a> Flattener<'a> {
                     options
                         .iter()
                         .map(|(weight, option)| Ok((*weight, self.build_node(option, inherited)?)))
-                        .collect::<Result<Vec<_>, BoxError>>()?
+                        .collect::<Result<Vec<_>, BlueprintError>>()?
                         .into(),
                 )
             }
@@ -107,7 +102,7 @@ impl<'a> Flattener<'a> {
         })
     }
 
-    fn build_entry(&mut self, entry: &RawEntry, mut blueprint: Blueprint) -> Result<Blueprint, BoxError> {
+    fn build_entry(&mut self, entry: &RawEntry, mut blueprint: Blueprint) -> Result<Blueprint, BlueprintError> {
         for item in &entry.items {
             match &**item {
                 RawItem::Set(components) => {
@@ -135,38 +130,37 @@ impl<'a> Flattener<'a> {
             .map(|raw| self.resolve_part(raw, &blueprint))
             .collect::<Result<_, _>>()?;
         blueprint.parts = parts;
-        blueprint.validate_random(self.registry)?;
         Ok(blueprint)
     }
 
-    fn apply_component(&mut self, blueprint: &mut Blueprint, raw: &RawComponent) -> Result<(), BoxError> {
-        blueprint.patch_component(self.registry, raw.type_id, &*raw.value)?;
+    fn apply_component(&mut self, blueprint: &mut Blueprint, raw: &RawComponent) -> Result<(), BlueprintError> {
+        let at = |e: BlueprintError| e.at(&raw.span);
+        blueprint.patch_component(self.registry, raw.type_id, &*raw.value).map_err(at)?;
         for (path, spec) in &raw.random {
-            blueprint.set_random(self.registry, raw.type_id, path, spec)?;
+            blueprint.set_random(self.registry, raw.type_id, path, spec).map_err(at)?;
         }
+        blueprint.validate_random(self.registry, raw.type_id).map_err(at)?;
         for blueprint_ref in &raw.refs {
-            blueprint.set_ref(self.registry, raw.type_id, blueprint_ref.clone())?;
+            blueprint.set_ref(self.registry, raw.type_id, blueprint_ref.clone()).map_err(at)?;
         }
         for frozen in &raw.frozen {
-            let node = self.resolve_extends(&frozen.target)?;
-            ensure_no_maybe(&node).map_err(|e| format!("Frozen(\"{}\"): {e}", frozen.target))?;
             let field = FrozenField {
                 path: frozen.path.clone(),
-                node,
+                node: self.resolve_blueprint(&frozen.target, &frozen.span, ErrorKind::Reference)?,
             };
-            blueprint.set_frozen(self.registry, raw.type_id, field)?;
+            blueprint.set_frozen(self.registry, raw.type_id, field).map_err(at)?;
         }
         Ok(())
     }
 
     /// Resolves a random set against `base`: each option's values are merged into the base's.
-    fn resolve_part(&mut self, raw: &RawItem, base: &Blueprint) -> Result<Part, BoxError> {
+    fn resolve_part(&mut self, raw: &RawItem, base: &Blueprint) -> Result<Part, BlueprintError> {
         Ok(match raw {
             RawItem::OneOf(options) => Part::OneOf(
                 options
                     .iter()
                     .map(|(weight, option)| Ok((*weight, self.resolve_option(option, base)?)))
-                    .collect::<Result<Vec<_>, BoxError>>()?
+                    .collect::<Result<Vec<_>, BlueprintError>>()?
                     .into(),
             ),
             RawItem::Maybe(chance, option) => Part::Maybe(Arc::new((*chance, self.resolve_option(option, base)?))),
@@ -174,7 +168,7 @@ impl<'a> Flattener<'a> {
         })
     }
 
-    fn resolve_option(&mut self, raw: &RawItem, base: &Blueprint) -> Result<PartOption, BoxError> {
+    fn resolve_option(&mut self, raw: &RawItem, base: &Blueprint) -> Result<PartOption, BlueprintError> {
         let mut scratch = Blueprint {
             components: base.components.clone(),
             ..Blueprint::default()
@@ -182,7 +176,6 @@ impl<'a> Flattener<'a> {
         let mut touched = Vec::new();
         let mut parts = Vec::new();
         self.add_to_option(raw, &mut scratch, &mut touched, &mut parts)?;
-        scratch.validate_random(self.registry)?;
         let components = scratch
             .components
             .into_iter()
@@ -197,7 +190,7 @@ impl<'a> Flattener<'a> {
         scratch: &mut Blueprint,
         touched: &mut Vec<std::any::TypeId>,
         parts: &mut Vec<Part>,
-    ) -> Result<(), BoxError> {
+    ) -> Result<(), BlueprintError> {
         match raw {
             RawItem::Set(components) => {
                 for component in components {
@@ -217,20 +210,30 @@ impl<'a> Flattener<'a> {
         Ok(())
     }
 
-    fn resolve_extends(&mut self, extends: &str) -> Result<Node, BoxError> {
-        let target = self.here.resolve_embed_str(extends)?;
-        let label = target
+    /// The blueprint `target` refers to (`"#label"` or `"file.bp.ron#label"`), as written at
+    /// `span` in an `extends` or a `Frozen(..)`; `kind` says which, for errors.
+    fn resolve_blueprint(&mut self, target: &str, span: &Span, kind: ErrorKind) -> Result<Node, BlueprintError> {
+        let error = |message: String| BlueprintError::new(kind, message);
+        let path = self
+            .here
+            .resolve_embed_str(target)
+            .map_err(|e| error(e.to_string()).at(span))?;
+        let label = path
             .label()
-            .ok_or_else(|| format!("`extends: \"{extends}\"` needs a #label"))?;
-        if target.path() == self.here.path() {
-            return self.flatten(label);
+            .ok_or_else(|| error(format!("`{target}` needs a #label (\"#label\" or \"file.bp.ron#label\")")).at(span))?;
+        let file = path.without_label().into_owned();
+        if path.path() == self.here.path() {
+            if !self.raw.contains_key(label) {
+                return Err(error(format!("no blueprint `{label}` in {file}")).at(span));
+            }
+            // A cycle is reported at the reference that closes it.
+            return self.flatten(label).map_err(|e| e.at(span));
         }
-        let file = target.without_label().into_owned();
         self.parent_files[&file]
             .entries
             .get(label)
             .cloned()
-            .ok_or_else(|| format!("no blueprint `{label}` in {file}").into())
+            .ok_or_else(|| error(format!("no blueprint `{label}` in {file}")).at(span))
     }
 }
 
@@ -240,14 +243,5 @@ fn without_maybe(node: &Node) -> Option<&Node> {
         Node::Fixed(_) => Some(node),
         Node::Maybe(maybe) => without_maybe(&maybe.1),
         Node::OneOf(_) => None,
-    }
-}
-
-/// Only children can be `Maybe(..)`: a blueprint always spawns something.
-fn ensure_no_maybe(node: &Node) -> Result<(), BoxError> {
-    match node {
-        Node::Fixed(_) => Ok(()),
-        Node::OneOf(options) => options.iter().try_for_each(|(_, option)| ensure_no_maybe(option)),
-        Node::Maybe(_) => Err("only children can be Maybe(..)".into()),
     }
 }
