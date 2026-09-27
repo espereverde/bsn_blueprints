@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-bevy = { version = "0.19", default-features = false, features = ["std", "bevy_asset", "bevy_scene", "bevy_log", "file_watcher", "serialize"] }
+bevy = { version = "0.19", default-features = false, features = ["std", "bevy_asset", "bevy_scene", "bevy_state", "bevy_log", "file_watcher", "serialize"] }
 ron2 = { version = "=0.3.0", default-features = false }
 serde = "1"
 rand = "0.9"

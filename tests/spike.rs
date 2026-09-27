@@ -3,8 +3,13 @@ use std::time::Duration;
 use bevy::asset::io::Reader;
 use bevy::asset::{AssetLoadError, AssetLoader, LoadContext, RecursiveDependencyLoadState, ReflectAsset};
 use bevy::prelude::*;
+use bevy::state::app::StatesPlugin;
 use bevy::scene::{CachedSceneAsset, ScenePatch, ScenePatchInstance, ScenePlugin, WorldSceneExt, bsn};
-use bsn_blueprints::{BlueprintError, BlueprintPlugin, ErrorKind, Position, Recipe, ReflectRecipe};
+use bsn_blueprints::{
+    BlueprintCommandsExt, BlueprintEntityCommandsExt, BlueprintError, BlueprintFile, BlueprintInstance,
+    BlueprintLoadingPlugin, BlueprintLoadingProgress, BlueprintPlugin, BlueprintSet, Blueprints,
+    ErrorKind, Position, Recipe, ReflectRecipe,
+};
 use serde::Deserialize;
 
 // ---- "Game" types: plain reflected components, no blueprint-specific code ----
@@ -908,3 +913,251 @@ fn blueprint_references_in_a_list() {
     assert!(plain.iter().any(|s| *s != plain[0]), "{plain:?}");
 }
 
+
+// ---- Spawn helpers ----
+
+/// Runs the app until `done` holds.
+fn update_until(app: &mut App, what: &str, mut done: impl FnMut(&World) -> bool) {
+    for _ in 0..1000 {
+        app.update();
+        if done(app.world()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    panic!("timed out waiting for {what}");
+}
+
+fn loaded_file(app: &mut App, path: &'static str) -> Handle<BlueprintFile> {
+    let file: Handle<BlueprintFile> = app.world().resource::<AssetServer>().load(path);
+    update_until(app, path, |world| world.resource::<Assets<BlueprintFile>>().contains(&file));
+    file
+}
+
+#[test]
+fn spawn_blueprint_waits_for_its_file() {
+    let mut app = app();
+    let file: Handle<BlueprintFile> = app.world().resource::<AssetServer>().load("rocks.bp.ron");
+    let e = app
+        .world_mut()
+        .commands()
+        .spawn_blueprint(&file, "big_rock")
+        .insert(Transform::from_xyz(1.0, 2.0, 3.0))
+        .id();
+    app.world_mut().flush();
+    update_until(&mut app, "big_rock", |world| world.get::<Stats>(e).is_some());
+    assert_eq!(get::<Stats>(&app, e), Stats { hp: 40, armor: 2 });
+    assert_eq!(get::<Transform>(&app, e).translation, Vec3::new(1.0, 2.0, 3.0));
+    assert_eq!(get::<BlueprintInstance>(&app, e).label, "big_rock");
+}
+
+#[test]
+fn spawn_blueprint_with_a_loaded_file_spawns_in_the_same_frame() {
+    let mut app = app();
+    let file = loaded_file(&mut app, "rocks.bp.ron");
+    // Let the file's scenes resolve too.
+    let _ = load(&mut app, "rocks.bp.ron#rock");
+    let e = app.world_mut().commands().spawn_blueprint(&file, "rock").id();
+    app.world_mut().flush();
+    app.update();
+    assert_eq!(get::<Stats>(&app, e), Stats { hp: 10, armor: 2 });
+}
+
+#[test]
+fn insert_blueprint_adds_to_an_existing_entity() {
+    let mut app = app();
+    let file = loaded_file(&mut app, "rocks.bp.ron");
+    let e = app.world_mut().spawn((Marker, Name::new("Before"))).id();
+    app.world_mut().commands().entity(e).insert_blueprint(&file, "rock");
+    app.world_mut().flush();
+    update_until(&mut app, "rock", |world| world.get::<Stats>(e).is_some());
+    assert!(app.world().get::<Marker>(e).is_some(), "other components are kept");
+    assert_eq!(get::<Name>(&app, e).as_str(), "Rock", "the blueprint's components replace existing ones");
+}
+
+#[test]
+fn a_blueprint_instance_that_cant_spawn_is_removed() {
+    let mut app = app();
+    let file = loaded_file(&mut app, "rocks.bp.ron");
+    let missing_label = app.world_mut().spawn(BlueprintInstance::new(&file, "pebble")).id();
+    let broken: Handle<BlueprintFile> = app.world().resource::<AssetServer>().load("missing_parent.bp.ron");
+    let broken_file = app.world_mut().spawn(BlueprintInstance::new(&broken, "orphan")).id();
+    update_until(&mut app, "both to fail", |world| {
+        world.get::<BlueprintInstance>(missing_label).is_none() && world.get::<BlueprintInstance>(broken_file).is_none()
+    });
+    for e in [missing_label, broken_file] {
+        assert!(app.world().get_entity(e).is_ok(), "the entity itself stays");
+        assert!(app.world().get::<Stats>(e).is_none());
+    }
+}
+
+// ---- Loading state ----
+
+#[derive(States, Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+enum GameState {
+    #[default]
+    Loading,
+    Menu,
+    LevelLoading,
+    Playing,
+}
+
+/// `(loaded, failed, total)`.
+fn progress(app: &App) -> (usize, usize, usize) {
+    let progress = app.world().resource::<BlueprintLoadingProgress<GameState>>();
+    (progress.loaded(), progress.failed(), progress.total())
+}
+
+fn state(world: &World) -> GameState {
+    *world.resource::<State<GameState>>().get()
+}
+
+struct RockFile;
+struct TurretFile;
+struct BrokenFile;
+
+#[derive(Resource)]
+struct SpawnedRock(Entity);
+
+fn loading_app(plugin: BlueprintLoadingPlugin<GameState>) -> App {
+    let mut app = app();
+    app.add_plugins((StatesPlugin, plugin)).init_state::<GameState>();
+    app
+}
+
+#[test]
+fn loading_plugin_switches_state_when_files_are_loaded() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing)
+            .load::<RockFile>("rocks.bp.ron")
+            .load::<TurretFile>("turrets.bp.ron"),
+    );
+    app.add_systems(OnEnter(GameState::Playing), |mut commands: Commands, rocks: Res<Blueprints<RockFile>>| {
+        let rock = commands.spawn_blueprint(&rocks, "rock").id();
+        commands.insert_resource(SpawnedRock(rock));
+    });
+
+    app.update();
+    assert!(app.world().contains_resource::<Blueprints<RockFile>>(), "resources exist once loading starts");
+    assert!(app.world().contains_resource::<Blueprints<TurretFile>>());
+
+    update_until(&mut app, "Playing", |world| *world.resource::<State<GameState>>() == GameState::Playing);
+    assert_eq!(progress(&app), (2, 0, 2));
+    assert_eq!(app.world().resource::<BlueprintLoadingProgress<GameState>>().fraction(), 1.0);
+
+    let rock = app.world().resource::<SpawnedRock>().0;
+    update_until(&mut app, "the rock", |world| world.get::<Stats>(rock).is_some());
+    assert_eq!(get::<Stats>(&app, rock), Stats { hp: 10, armor: 2 });
+}
+
+#[test]
+fn loading_plugin_stays_in_loading_state_if_a_file_fails() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing)
+            .load::<RockFile>("rocks.bp.ron")
+            .load::<BrokenFile>("missing_parent.bp.ron"),
+    );
+    update_until(&mut app, "the load to settle", |world| {
+        let progress = world.resource::<BlueprintLoadingProgress<GameState>>();
+        progress.loaded() + progress.failed() == 2
+    });
+    for _ in 0..5 {
+        app.update();
+    }
+    assert_eq!(progress(&app), (1, 1, 2));
+    assert_eq!(*app.world().resource::<State<GameState>>(), GameState::Loading);
+}
+
+struct Scenery;
+
+#[test]
+fn loading_plugin_loads_a_named_set_of_files() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing)
+            .load::<TurretFile>("turrets.bp.ron")
+            .load_set::<Scenery>([("rocks", "rocks.bp.ron"), ("saucers", "saucers.bp.ron")]),
+    );
+    update_until(&mut app, "Playing", |world| *world.resource::<State<GameState>>() == GameState::Playing);
+    assert_eq!(progress(&app).2, 3);
+
+    let set = app.world().resource::<BlueprintSet<Scenery>>();
+    let mut names: Vec<_> = set.names().collect();
+    names.sort_unstable();
+    assert_eq!(names, ["rocks", "saucers"]);
+    let rocks = set["rocks"].clone();
+    let big_rock = set.instance("rocks.big_rock").expect("file.label");
+    assert!(set.instance("pebbles.rock").is_none(), "unknown file");
+    assert!(set.instance("rocks").is_none(), "no label");
+
+    let rock = app.world_mut().commands().spawn_blueprint(&rocks, "rock").id();
+    let big = app.world_mut().spawn(big_rock).id();
+    app.world_mut().flush();
+    app.update();
+    assert_eq!(get::<Stats>(&app, rock), Stats { hp: 10, armor: 2 });
+    assert_eq!(get::<Stats>(&app, big), Stats { hp: 40, armor: 2 });
+}
+
+#[test]
+#[should_panic(expected = "no blueprint file `pebbles` in BlueprintSet")]
+fn blueprint_set_index_panics_on_unknown_file() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing)
+            .load_set::<Scenery>([("rocks", "rocks.bp.ron")]),
+    );
+    app.update();
+    let _ = &app.world().resource::<BlueprintSet<Scenery>>()["pebbles"];
+}
+
+#[test]
+#[should_panic(expected = "without `.`")]
+fn blueprint_set_names_cannot_contain_dots() {
+    let _ = BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing)
+        .load_set::<Scenery>([("rocks.v2", "rocks.bp.ron")]);
+}
+
+#[test]
+fn loading_plugins_for_the_same_state_are_combined() {
+    // As if two game plugins each registered their own files.
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing).load::<RockFile>("rocks.bp.ron"),
+    );
+    app.add_plugins(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing).load::<TurretFile>("turrets.bp.ron"),
+    );
+    update_until(&mut app, "Playing", |world| state(world) == GameState::Playing);
+    assert_eq!(progress(&app), (2, 0, 2));
+    assert!(app.world().contains_resource::<Blueprints<RockFile>>());
+    assert!(app.world().contains_resource::<Blueprints<TurretFile>>());
+}
+
+#[test]
+fn loading_plugins_for_different_states_load_their_own_files() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Menu).load::<RockFile>("rocks.bp.ron"),
+    );
+    app.add_plugins(
+        BlueprintLoadingPlugin::new(GameState::LevelLoading, GameState::Playing)
+            .load::<TurretFile>("turrets.bp.ron"),
+    );
+
+    update_until(&mut app, "Menu", |world| state(world) == GameState::Menu);
+    assert_eq!(progress(&app), (1, 0, 1));
+    assert!(app.world().contains_resource::<Blueprints<RockFile>>());
+    assert!(!app.world().contains_resource::<Blueprints<TurretFile>>(), "not loaded before its state");
+
+    app.world_mut().resource_mut::<NextState<GameState>>().set(GameState::LevelLoading);
+    update_until(&mut app, "Playing", |world| state(world) == GameState::Playing);
+    assert_eq!(progress(&app), (1, 0, 1));
+    assert!(app.world().contains_resource::<Blueprints<TurretFile>>());
+}
+
+#[test]
+#[should_panic(expected = "already switches to Playing; it can't also switch to Menu")]
+fn loading_plugins_for_the_same_state_must_agree_on_the_next() {
+    let mut app = loading_app(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Playing).load::<RockFile>("rocks.bp.ron"),
+    );
+    app.add_plugins(
+        BlueprintLoadingPlugin::new(GameState::Loading, GameState::Menu).load::<TurretFile>("turrets.bp.ron"),
+    );
+}

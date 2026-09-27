@@ -45,8 +45,7 @@ The `ron2` parser needs Rust 1.90 or newer.
 
 ```rust
 use bevy::prelude::*;
-use bevy::scene::ScenePatchInstance;
-use bsn_blueprints::{BlueprintFile, BlueprintPlugin};
+use bsn_blueprints::{BlueprintCommandsExt, BlueprintPlugin};
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -56,23 +55,15 @@ fn main() {
     App::new()
         .add_plugins((DefaultPlugins, BlueprintPlugin))
         .register_type::<Stats>()
-        .add_systems(Startup, load)
-        .add_systems(Update, spawn_when_ready)
+        .add_systems(Startup, spawn_ufo)
         .run();
 }
 
-#[derive(Resource)]
-struct Enemies(Handle<BlueprintFile>);
-
-fn load(mut commands: Commands, server: Res<AssetServer>) {
-    commands.insert_resource(Enemies(server.load("enemies.bp.ron")));
-}
-
-fn spawn_when_ready(mut commands: Commands, enemies: Res<Enemies>, files: Res<Assets<BlueprintFile>>, mut done: Local<bool>) {
-    if *done { return; }
-    let Some(file) = files.get(&enemies.0) else { return };
-    commands.spawn(ScenePatchInstance(file.get("ufo").unwrap().clone()));
-    *done = true;
+fn spawn_ufo(mut commands: Commands, server: Res<AssetServer>) {
+    // Keep this handle (e.g. in a resource) to spawn more later; the file keeps its blueprints alive.
+    let enemies = server.load("enemies.bp.ron");
+    // Spawns as soon as the file has loaded.
+    commands.spawn_blueprint(&enemies, "ufo").insert(Transform::from_xyz(0.0, 50.0, 0.0));
 }
 ```
 
@@ -322,21 +313,75 @@ Consequences:
 ## Using blueprints from Rust
 
 ```rust
+use bsn_blueprints::{BlueprintCommandsExt, BlueprintEntityCommandsExt, BlueprintFile, BlueprintInstance};
+
 // Load the file once and keep the handle; the file keeps its blueprints alive.
-let file: Handle<BlueprintFile> = server.load("enemies.bp.ron");
+let enemies: Handle<BlueprintFile> = server.load("enemies.bp.ron");
 
-// Once loaded:
-let files = world.resource::<Assets<BlueprintFile>>();
-let ufo: Handle<ScenePatch> = files.get(&file).unwrap().get("ufo").unwrap().clone();
-for label in files.get(&file).unwrap().labels() { /* ... */ }
-
-// Spawn (waits for the scene if needed):
-commands.spawn(ScenePatchInstance(ufo.clone()));
-// Or, once ready:
-world.spawn_scene(CachedSceneAsset::from("enemies.bp.ron#ufo"))?;
+// Spawn by label, loaded or not (these three are equivalent):
+commands.spawn_blueprint(&enemies, "ufo").insert(Transform::default());
+commands.spawn((BlueprintInstance::new(&enemies, "ufo"), Transform::default()));
+commands.spawn(Transform::default()).insert_blueprint(&enemies, "ufo");
 ```
 
-**Prefer `BlueprintFile::get` over loading `"file.bp.ron#label"` paths.** Bevy 0.19 loads the
+A `BlueprintInstance` spawns as soon as its file (and every blueprint file it refers to) has
+loaded; if the file is already loaded, an instance added during `Update` is complete by the end of
+that frame. The blueprint's components replace ones the entity already has; others are kept. If
+the file fails to load or has no such label, the error is logged and the `BlueprintInstance`
+removed. `BlueprintPlugin` needs Bevy's `ScenePlugin` (part of `DefaultPlugins`).
+
+**Loading state.** `BlueprintLoadingPlugin` loads files when the app enters a loading state and
+switches to the next one when all of them (and everything they depend on) have loaded. Each file
+goes into a `Blueprints<T>` resource, and a named set of files into a `BlueprintSet<T>`, `T`
+being any type that names it:
+
+```rust
+use bsn_blueprints::{BlueprintCommandsExt, BlueprintLoadingPlugin, BlueprintLoadingProgress, BlueprintSet, Blueprints};
+
+struct Enemies;
+struct Armory;
+
+app.add_plugins(
+    BlueprintLoadingPlugin::new(AppState::Loading, AppState::Playing)
+        .load::<Enemies>("enemies.bp.ron")
+        .load_set::<Armory>([("weapons", "weapons.bp.ron"), ("bullets", "bullets.bp.ron")]),
+)
+.add_systems(OnEnter(AppState::Playing), |mut commands: Commands, enemies: Res<Blueprints<Enemies>>| {
+    commands.spawn_blueprint(&enemies, "ufo");
+});
+
+fn shoot(mut commands: Commands, armory: Res<BlueprintSet<Armory>>) {
+    commands.spawn_blueprint(&armory["weapons"], "turret");    // file by name (panics if unknown), then label
+    if let Some(bullet) = armory.instance("bullets.normal") {  // or "file.label"
+        commands.spawn(bullet);
+    }
+}
+
+// A loading screen can show `Res<BlueprintLoadingProgress<AppState>>`:
+// `loaded()`, `failed()`, `total()`, `fraction()`, `is_done()`.
+```
+
+Set names can't contain `.`. The resources exist as soon as loading starts. A file that fails to
+load is logged and counted in `failed()`, and the app stays in the loading state. Needs Bevy's
+`StatesPlugin` (part of `DefaultPlugins`).
+
+Add one plugin per loading state (`Boot → Menu` for the menu's files, `LevelLoading → Playing`
+for a level's): entering a loading state loads only its own files, and the progress is reset.
+Plugins for the *same* loading state are combined, so separate game plugins can each add their
+files; the state switches once all of them have loaded. They must agree on the next state (a
+conflict panics when the plugin is added).
+
+The scenes themselves, once the file is loaded:
+
+```rust
+let files = world.resource::<Assets<BlueprintFile>>();
+let ufo: Handle<ScenePatch> = files.get(&enemies).unwrap().get("ufo").unwrap().clone();
+for label in files.get(&enemies).unwrap().labels() { /* ... */ }
+commands.spawn(ScenePatchInstance(ufo.clone()));          // waits for the scene if needed
+world.spawn_scene(CachedSceneAsset::from("enemies.bp.ron#ufo"))?;   // only once it's ready
+```
+
+**Prefer `BlueprintInstance` / `BlueprintFile::get` over loading `"file.bp.ron#label"` paths.** Bevy 0.19 loads the
 whole file again for every label requested before the file has loaded; requesting thousands of
 labels that way can exhaust memory.
 
@@ -453,6 +498,8 @@ children): about 100–140 µs per blueprint. A 3.5 MB file with 5,000 blueprint
 | Module | Responsibility |
 |---|---|
 | `lib.rs` | Format docs, `BlueprintPlugin`, public exports. |
+| `loading.rs` | `BlueprintLoadingPlugin`, `Blueprints<T>`, `BlueprintSet<T>`, `BlueprintLoadingProgress<S>`. |
+| `instance.rs` | `BlueprintInstance`, `spawn_blueprint` / `insert_blueprint`, the system that spawns instances once their file has loaded. |
 | `loader.rs` | `BlueprintLoader`, `BlueprintFile` (+ `get`/`labels`), loading parent files once, labeled scenes and their dependencies. |
 | `parse/mod.rs` | Raw structure (`RawNode`, `RawEntry`, `RawItem`, `RawComponent`), wrapper recognition (`OneOf`/`Maybe`/`Fixed`/`Weight`), entries, components. |
 | `parse/value.rs` | `ValueReader`: builds partial reflected values from the tree with the registry; records random / frozen / reference fields by path; handle fields. |
@@ -502,7 +549,7 @@ children): about 100–140 µs per blueprint. A 3.5 MB file with 5,000 blueprint
 ### Tests and benchmarks
 
 ```sh
-cargo test                                            # 33 integration tests (tests/spike.rs)
+cargo test                                            # 47 integration tests (tests/spike.rs)
 cargo run --release --example bench                   # spawn cost
 cargo run --release --example load_bench 100 1000     # load time; files go to assets/gen/
 ```

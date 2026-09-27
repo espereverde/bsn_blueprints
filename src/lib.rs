@@ -82,12 +82,15 @@
 //!
 //! # Loading
 //!
-//! Load the file and get blueprints from it by name; the file keeps them alive:
+//! Load the file once, keep its handle, and spawn blueprints from it by name. Spawning doesn't
+//! need to wait for the file: a [`BlueprintInstance`] spawns as soon as its file has loaded.
 //!
 //! ```ignore
-//! let file: Handle<BlueprintFile> = asset_server.load("enemies.bp.ron");
-//! // once loaded:
-//! let ufo = files.get(&file).unwrap().get("ufo").unwrap().clone();
+//! let enemies: Handle<BlueprintFile> = asset_server.load("enemies.bp.ron");
+//! commands.spawn_blueprint(&enemies, "ufo").insert(Transform::from_xyz(0.0, 50.0, 0.0));
+//! commands.entity(boss).insert_blueprint(&enemies, "mothership");
+//! // or, once loaded, the scene itself:
+//! let ufo = files.get(&enemies).unwrap().get("ufo").unwrap().clone();
 //! commands.spawn(ScenePatchInstance(ufo));
 //! ```
 //!
@@ -110,25 +113,35 @@ mod blueprint;
 mod error;
 mod flatten;
 mod freeze;
+mod instance;
 mod loader;
+mod loading;
 mod parse;
 mod random;
 mod recipe;
 mod reflect_utils;
 mod spawn;
 
+use bevy::app::SceneSpawnerSystems;
 use bevy::prelude::*;
 
 pub use error::{BlueprintError, ErrorKind, Position};
+pub use instance::{BlueprintCommandsExt, BlueprintEntityCommandsExt, BlueprintInstance};
 pub use loader::{BlueprintFile, BlueprintLoader};
+pub use loading::{BlueprintLoadingPlugin, BlueprintLoadingProgress, BlueprintSet, Blueprints};
 pub use recipe::{Recipe, ReflectRecipe};
 
-/// Registers the `*.bp.ron` loader.
+/// Registers the `*.bp.ron` loader and spawns [`BlueprintInstance`]s. Needs Bevy's
+/// `ScenePlugin`.
 pub struct BlueprintPlugin;
 
 impl Plugin for BlueprintPlugin {
     fn build(&self, app: &mut App) {
         app.init_asset::<BlueprintFile>()
-            .init_asset_loader::<BlueprintLoader>();
+            .init_asset_loader::<BlueprintLoader>()
+            .add_systems(
+                SpawnScene,
+                instance::spawn_blueprint_instances.before(SceneSpawnerSystems::SceneSpawn),
+            );
     }
 }
