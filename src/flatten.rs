@@ -55,7 +55,11 @@ impl<'a> Flattener<'a> {
         if self.visiting.iter().any(|l| l == label) {
             return Err(BlueprintError::new(
                 ErrorKind::Inheritance,
-                format!("inheritance cycle in {}: {} -> {label}", self.here, self.visiting.join(" -> ")),
+                format!(
+                    "inheritance cycle in {}: {} -> {label}",
+                    self.here,
+                    self.visiting.join(" -> ")
+                ),
             ));
         }
         let raw = &self.raw[label];
@@ -135,13 +139,19 @@ impl<'a> Flattener<'a> {
 
     fn apply_component(&mut self, blueprint: &mut Blueprint, raw: &RawComponent) -> Result<(), BlueprintError> {
         let at = |e: BlueprintError| e.at(&raw.span);
-        blueprint.patch_component(self.registry, raw.type_id, &*raw.value).map_err(at)?;
+        blueprint
+            .patch_component(self.registry, raw.type_id, &*raw.value)
+            .map_err(at)?;
         for (path, spec) in &raw.random {
-            blueprint.set_random(self.registry, raw.type_id, path, spec).map_err(at)?;
+            blueprint
+                .set_random(self.registry, raw.type_id, path, spec)
+                .map_err(at)?;
         }
         blueprint.validate_random(self.registry, raw.type_id).map_err(at)?;
         for blueprint_ref in &raw.refs {
-            blueprint.set_ref(self.registry, raw.type_id, blueprint_ref.clone()).map_err(at)?;
+            blueprint
+                .set_ref(self.registry, raw.type_id, blueprint_ref.clone())
+                .map_err(at)?;
         }
         for frozen in &raw.frozen {
             let field = FrozenField {
@@ -218,9 +228,12 @@ impl<'a> Flattener<'a> {
             .here
             .resolve_embed_str(target)
             .map_err(|e| error(e.to_string()).at(span))?;
-        let label = path
-            .label()
-            .ok_or_else(|| error(format!("`{target}` needs a #label (\"#label\" or \"file.bp.ron#label\")")).at(span))?;
+        let label = path.label().ok_or_else(|| {
+            error(format!(
+                "`{target}` needs a #label (\"#label\" or \"file.bp.ron#label\")"
+            ))
+            .at(span)
+        })?;
         let file = path.without_label().into_owned();
         if path.path() == self.here.path() {
             if !self.raw.contains_key(label) {

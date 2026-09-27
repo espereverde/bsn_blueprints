@@ -20,11 +20,11 @@ use crate::random::choose_weighted;
 pub(crate) struct BlueprintScene(pub(crate) Node);
 
 impl Scene for BlueprintScene {
-    fn resolve(
-        self,
-        context: &mut ResolveContext,
-        scene: &mut ResolvedScene,
-    ) -> Result<(), ResolveSceneError> {
+    #[expect(
+        clippy::only_used_in_recursion,
+        reason = "`context` is part of the `Scene` trait; child scenes resolve with it"
+    )]
+    fn resolve(self, context: &mut ResolveContext, scene: &mut ResolvedScene) -> Result<(), ResolveSceneError> {
         let Node::Fixed(blueprint) = self.0 else {
             scene.push_bundle_template(NodeTemplate(self.0));
             return Ok(());
@@ -143,11 +143,7 @@ fn apply_blueprint(entity: &mut EntityWorldMut, blueprint: &Blueprint, registry:
     spawn_children(entity, &chosen.children, registry)
 }
 
-fn spawn_children(
-    entity: &mut EntityWorldMut,
-    children: &[(&str, &Blueprint)],
-    registry: &TypeRegistry,
-) -> Result<()> {
+fn spawn_children(entity: &mut EntityWorldMut, children: &[(&str, &Blueprint)], registry: &TypeRegistry) -> Result<()> {
     let parent = entity.id();
     for (_, child) in children {
         entity.world_scope(|world| apply_blueprint(&mut world.spawn(ChildOf(parent)), child, registry))?;
@@ -200,7 +196,10 @@ fn insert_components(
                 let reflect_component = registry
                     .get_type_data::<ReflectComponent>(component.type_id)
                     .ok_or_else(|| {
-                        BlueprintError::new(ErrorKind::Type, "blueprint component lost its ReflectComponent registration")
+                        BlueprintError::new(
+                            ErrorKind::Type,
+                            "blueprint component lost its ReflectComponent registration",
+                        )
                     })?;
                 entity.world_scope(|world| reflect_component.register_component(world))
             }

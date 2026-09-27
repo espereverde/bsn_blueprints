@@ -231,9 +231,8 @@ impl Blueprint {
         path: &str,
         spec: &RandomSpec,
     ) -> Result<(), BlueprintError> {
-        let error = |e: &dyn std::fmt::Display| {
-            BlueprintError::new(ErrorKind::Random, format!("random field `{path}`: {e}"))
-        };
+        let error =
+            |e: &dyn std::fmt::Display| BlueprintError::new(ErrorKind::Random, format!("random field `{path}`: {e}"));
         let component = self.field_component(registry, type_id, path)?;
         component.clear_fields(&[path.to_string()]);
         let spec = match spec {
@@ -242,9 +241,7 @@ impl Blueprint {
                 let current = if path.is_empty() {
                     (*component.value).as_partial_reflect()
                 } else {
-                    (*component.value)
-                        .reflect_path(path)
-                        .map_err(|e| error(&e))?
+                    (*component.value).reflect_path(path).map_err(|e| error(&e))?
                 };
                 let mut whole = Vec::with_capacity(options.len());
                 for (weight, option) in options {

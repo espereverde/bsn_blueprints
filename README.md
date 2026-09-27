@@ -1,4 +1,4 @@
-# bsn_blueprints (spike)
+# bsn_blueprints
 
 Data-driven game entities for **Bevy 0.19**, defined in `*.bp.ron` files that can be edited
 without recompiling. Blueprints can inherit from each other, reference each other, and describe
@@ -7,9 +7,8 @@ random variation that is rolled every time an entity is spawned.
 Each blueprint becomes a regular Bevy scene (`ScenePatch`), so it spawns through the stock scene
 API and can be used from `bsn!`.
 
-> **Status: spike.** Everything described here works and is covered by tests, but the crate is
-> not a polished library yet: the API is minimal, and it lives in
-> `spikes/` of Lunar Watch. See [`PLAN.md`](PLAN.md) for the road to the real `bevy_blueprints`.
+> **Status: early.** Everything described here works and is covered by tests, but the API may
+> still change between commits, and the crate is not published on crates.io yet.
 
 ---
 
@@ -26,10 +25,14 @@ API and can be used from `bsn!`.
   - [Recipes](#recipes)
 - [How components are built](#how-components-are-built)
 - [Using blueprints from Rust](#using-blueprints-from-rust)
+  - [Spawning](#spawning)
+  - [Loading state](#loading-state)
+  - [Scenes and `bsn!`](#scenes-and-bsn)
 - [Errors](#errors)
 - [Performance](#performance)
 - [Limitations and gotchas](#limitations-and-gotchas)
 - [For developers](#for-developers)
+- [License](#license)
 
 ---
 
@@ -38,10 +41,12 @@ API and can be used from `bsn!`.
 ```toml
 [dependencies]
 bevy = { version = "0.19", features = ["serialize"] }   # `serialize`: serde support for Name etc.
-bsn_blueprints = { path = "spikes/bsn_blueprints" }
+bsn_blueprints = { git = "https://github.com/espereverde/bsn_blueprints" }
+# or, from a local checkout (e.g. a git submodule):
+# bsn_blueprints = { path = "libs/bsn_blueprints" }
 ```
 
-The `ron2` parser needs Rust 1.90 or newer.
+Needs Rust 1.95 or newer (Bevy 0.19's minimum).
 
 ```rust
 use bevy::prelude::*;
@@ -82,6 +87,11 @@ fn spawn_ufo(mut commands: Commands, server: Res<AssetServer>) {
 
 Every type used in a blueprint must be **registered** (`register_type`) and reflect
 `Component` (or [`Recipe`](#recipes)). Add `#[reflect(Default)]` to allow partial values.
+With `MinimalPlugins`, that includes Bevy types like `Name`.
+
+For a complete, runnable example (a loading state, spawning by name, a recipe, plain and
+`Frozen` blueprint references), run `cargo run --example armory`; its blueprints are in
+`assets/examples/`.
 
 ---
 
@@ -312,6 +322,8 @@ Consequences:
 
 ## Using blueprints from Rust
 
+### Spawning
+
 ```rust
 use bsn_blueprints::{BlueprintCommandsExt, BlueprintEntityCommandsExt, BlueprintFile, BlueprintInstance};
 
@@ -330,7 +342,9 @@ that frame. The blueprint's components replace ones the entity already has; othe
 the file fails to load or has no such label, the error is logged and the `BlueprintInstance`
 removed. `BlueprintPlugin` needs Bevy's `ScenePlugin` (part of `DefaultPlugins`).
 
-**Loading state.** `BlueprintLoadingPlugin` loads files when the app enters a loading state and
+### Loading state
+
+`BlueprintLoadingPlugin` loads files when the app enters a loading state and
 switches to the next one when all of them (and everything they depend on) have loaded. Each file
 goes into a `Blueprints<T>` resource, and a named set of files into a `BlueprintSet<T>`, `T`
 being any type that names it:
@@ -371,6 +385,8 @@ Plugins for the *same* loading state are combined, so separate game plugins can 
 files; the state switches once all of them have loaded. They must agree on the next state (a
 conflict panics when the plugin is added).
 
+### Scenes and `bsn!`
+
 The scenes themselves, once the file is loaded:
 
 ```rust
@@ -381,11 +397,11 @@ commands.spawn(ScenePatchInstance(ufo.clone()));          // waits for the scene
 world.spawn_scene(CachedSceneAsset::from("enemies.bp.ron#ufo"))?;   // only once it's ready
 ```
 
-**Prefer `BlueprintInstance` / `BlueprintFile::get` over loading `"file.bp.ron#label"` paths.** Bevy 0.19 loads the
-whole file again for every label requested before the file has loaded; requesting thousands of
-labels that way can exhaust memory.
+**Prefer `BlueprintInstance` / `BlueprintFile::get` over loading `"file.bp.ron#label"` paths.**
+Bevy 0.19 loads the whole file again for every label requested before the file has loaded;
+requesting thousands of labels that way can exhaust memory.
 
-**`bsn!` interop.** A `bsn!` scene can inherit a blueprint and add components:
+A `bsn!` scene can inherit a blueprint and add components:
 `bsn! { :"enemies.bp.ron#ufo" Marker }`. A component set in `bsn!` replaces the blueprint's
 value of that component as a whole (field-level merging only happens inside blueprint files).
 
@@ -549,10 +565,22 @@ children): about 100–140 µs per blueprint. A 3.5 MB file with 5,000 blueprint
 ### Tests and benchmarks
 
 ```sh
-cargo test                                            # 47 integration tests (tests/spike.rs)
+cargo test                                            # 47 integration tests (tests/blueprints/)
+cargo run --example armory                            # the example game (headless, prints what happens)
 cargo run --release --example bench                   # spawn cost
 cargo run --release --example load_bench 100 1000     # load time; files go to assets/gen/
 ```
+
+CI (`.github/workflows/ci.yml`) runs on stable: `cargo fmt --check` (`rustfmt.toml`: 120 columns),
+clippy with warnings as errors, the tests, `cargo doc` with warnings as errors, and the `armory`
+example; and `cargo check` on the minimum Rust version (1.95). The crate doesn't pin a toolchain;
+inside Lunar Watch, the game's `rust-toolchain.toml` applies.
+
+Integration tests are one binary (`tests/blueprints/main.rs`) with a module per feature:
+`inheritance`, `randomness`, `children`, `references`, `recipes`, `errors`, `spawning`,
+`loading`. A binary per file would link all of Bevy once per file. `support.rs` has the test
+"game" types, the app harness and shared helpers; helpers used by one feature live in its module.
+Run one feature with `cargo test loading::`.
 
 Tests use `assets/*.bp.ron`; each test names the blueprint it exercises. Statistical tests use
 wide margins (~6σ) and have been run repeatedly (60× without failure).
@@ -563,3 +591,9 @@ wide margins (~6σ) and have been run repeatedly (60× without failure).
 CARGO_MANIFEST_DIR=$PWD systemd-run --user --scope -E CARGO_MANIFEST_DIR=$PWD \
     -p MemoryMax=4G -p MemorySwapMax=0 target/release/examples/load_bench 5000
 ```
+
+---
+
+## License
+
+Dual-licensed under [MIT](LICENSE-MIT) or [Apache 2.0](LICENSE-APACHE), at your option.

@@ -24,6 +24,9 @@ use crate::error::{BlueprintError, ErrorKind};
 /// }
 /// ```
 pub trait Recipe: Reflect {
+    /// The components this recipe expands to. Called on every spawn, with this spawn's values
+    /// (random fields already chosen). The bundle must own its data: clone what it needs from
+    /// `self`.
     fn bundle(&self) -> impl Bundle + use<Self>;
 }
 

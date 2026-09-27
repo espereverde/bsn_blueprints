@@ -25,11 +25,14 @@ use crate::loader::BlueprintFile;
 /// component removed.
 #[derive(Component, Clone, Debug)]
 pub struct BlueprintInstance {
+    /// The blueprint file, loaded or not.
     pub file: Handle<BlueprintFile>,
+    /// The blueprint's label in the file.
     pub label: Cow<'static, str>,
 }
 
 impl BlueprintInstance {
+    /// The blueprint `label` of `file`.
     pub fn new(file: &Handle<BlueprintFile>, label: impl Into<Cow<'static, str>>) -> Self {
         Self {
             file: file.clone(),
@@ -84,13 +87,23 @@ pub(crate) fn spawn_blueprint_instances(
                 Some(scene) => scene.clone(),
                 None => {
                     let labels: Vec<_> = file.labels().collect();
-                    fail(&mut commands, entity, instance, format!("no such blueprint; the file has {labels:?}"));
+                    fail(
+                        &mut commands,
+                        entity,
+                        instance,
+                        format!("no such blueprint; the file has {labels:?}"),
+                    );
                     continue;
                 }
             },
             None => {
                 if let LoadState::Failed(error) = server.load_state(&instance.file) {
-                    fail(&mut commands, entity, instance, format!("the file failed to load: {error}"));
+                    fail(
+                        &mut commands,
+                        entity,
+                        instance,
+                        format!("the file failed to load: {error}"),
+                    );
                 }
                 continue;
             }
@@ -100,7 +113,13 @@ pub(crate) fn spawn_blueprint_instances(
 }
 
 fn fail(commands: &mut Commands, entity: Entity, instance: &BlueprintInstance, reason: String) {
-    let path = instance.file.path().map_or_else(|| format!("{:?}", instance.file.id()), ToString::to_string);
-    error!("{entity}: can't spawn blueprint `{}` of {path}: {reason}", instance.label);
+    let path = instance
+        .file
+        .path()
+        .map_or_else(|| format!("{:?}", instance.file.id()), ToString::to_string);
+    error!(
+        "{entity}: can't spawn blueprint `{}` of {path}: {reason}",
+        instance.label
+    );
     commands.entity(entity).remove::<BlueprintInstance>();
 }

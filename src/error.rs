@@ -61,7 +61,9 @@ pub enum ErrorKind {
 /// A position in a blueprint file, both counted from 1.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Position {
+    /// The line, from 1.
     pub line: usize,
+    /// The column (character in the line), from 1.
     pub column: usize,
 }
 
@@ -90,6 +92,7 @@ impl BlueprintError {
         self
     }
 
+    /// What kind of problem this is.
     pub fn kind(&self) -> ErrorKind {
         self.0.kind
     }
@@ -113,7 +116,10 @@ impl BlueprintError {
 impl fmt::Display for BlueprintError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let Inner {
-            file, position, message, ..
+            file,
+            position,
+            message,
+            ..
         } = &*self.0;
         if let Some(file) = file {
             write!(f, "{file}:")?;

@@ -24,9 +24,7 @@ pub(crate) fn error(kind: ErrorKind, expr: &Expr, message: impl Into<String>) ->
 pub(crate) fn call<'e, 'a>(expr: &'e Expr<'a>) -> Option<(&'e str, Vec<&'e Expr<'a>>)> {
     match expr {
         Expr::Struct(s) => match &s.body {
-            Some(StructBody::Tuple(body)) => {
-                Some((&s.name.name, body.elements.iter().map(|e| &e.expr).collect()))
-            }
+            Some(StructBody::Tuple(body)) => Some((&s.name.name, body.elements.iter().map(|e| &e.expr).collect())),
             None => Some((&s.name.name, Vec::new())),
             Some(StructBody::Fields(_)) => None,
         },
@@ -165,7 +163,10 @@ impl<'de, 'e, 'a: 'e, I: Iterator<Item = &'e Expr<'a>>> de::SeqAccess<'de> for I
     type Error = ExprError;
 
     fn next_element_seed<T: DeserializeSeed<'de>>(&mut self, seed: T) -> Result<Option<T::Value>, ExprError> {
-        self.0.next().map(|expr| seed.deserialize(ExprDeserializer(expr))).transpose()
+        self.0
+            .next()
+            .map(|expr| seed.deserialize(ExprDeserializer(expr)))
+            .transpose()
     }
 }
 
@@ -194,7 +195,10 @@ impl<'de, 'e, 'a: 'e, I: Iterator<Item = (Key<'e, 'a>, &'e Expr<'a>)>> de::MapAc
     }
 
     fn next_value_seed<V: DeserializeSeed<'de>>(&mut self, seed: V) -> Result<V::Value, ExprError> {
-        let value = self.value.take().ok_or_else(|| de::Error::custom("value without key"))?;
+        let value = self
+            .value
+            .take()
+            .ok_or_else(|| de::Error::custom("value without key"))?;
         seed.deserialize(ExprDeserializer(value))
     }
 }

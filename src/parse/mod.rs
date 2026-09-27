@@ -115,7 +115,11 @@ pub(crate) fn parse_file(
         return Ok(HashMap::default());
     };
     let Expr::Map(map) = root else {
-        return Err(error(ErrorKind::Syntax, root, "expected a map of blueprint name to blueprint"));
+        return Err(error(
+            ErrorKind::Syntax,
+            root,
+            "expected a map of blueprint name to blueprint",
+        ));
     };
     let mut reader = ValueReader {
         registry,
@@ -128,7 +132,11 @@ pub(crate) fn parse_file(
         ensure_no_maybe(label, &entry.value)?;
         let node = read_node(&entry.value, &mut reader)?;
         if nodes.insert(label.to_string(), node).is_some() {
-            return Err(error(ErrorKind::Syntax, &entry.key, format!("duplicate blueprint `{label}`")));
+            return Err(error(
+                ErrorKind::Syntax,
+                &entry.key,
+                format!("duplicate blueprint `{label}`"),
+            ));
         }
     }
     Ok(nodes)
@@ -238,17 +246,29 @@ fn read_entry(expr: &Expr, reader: &mut ValueReader) -> ParseResult<RawEntry> {
     for field in fields {
         match &*field.name.name {
             "extends" => entry.extends = Some((string(&field.value)?.to_string(), *field.value.span())),
-            "components" => entry.items.extend(read_items(&field.value, reader)?.into_iter().map(Arc::new)),
+            "components" => entry
+                .items
+                .extend(read_items(&field.value, reader)?.into_iter().map(Arc::new)),
             "children" => {
                 let Expr::Map(map) = &field.value else {
-                    return Err(error(ErrorKind::Syntax, &field.value, "expected a map of child name to blueprint"));
+                    return Err(error(
+                        ErrorKind::Syntax,
+                        &field.value,
+                        "expected a map of child name to blueprint",
+                    ));
                 };
                 for child in &map.entries {
                     let name = string(&child.key)?;
                     if entry.children.iter().any(|(n, _)| n == name) {
-                        return Err(error(ErrorKind::Syntax, &child.key, format!("duplicate child `{name}`")));
+                        return Err(error(
+                            ErrorKind::Syntax,
+                            &child.key,
+                            format!("duplicate child `{name}`"),
+                        ));
                     }
-                    entry.children.push((name.to_string(), read_node(&child.value, reader)?));
+                    entry
+                        .children
+                        .push((name.to_string(), read_node(&child.value, reader)?));
                 }
             }
             other => {
@@ -289,7 +309,10 @@ fn read_items(expr: &Expr, reader: &mut ValueReader) -> ParseResult<Vec<RawItem>
                 .map(|(weight, option)| Ok((weight, group(read_items(option, reader)?))))
                 .collect::<ParseResult<_>>()?,
         )]),
-        Wrapper::Maybe(chance, inner) => Ok(vec![RawItem::Maybe(chance, Box::new(group(read_items(inner, reader)?)))]),
+        Wrapper::Maybe(chance, inner) => Ok(vec![RawItem::Maybe(
+            chance,
+            Box::new(group(read_items(inner, reader)?)),
+        )]),
     }
 }
 
@@ -350,12 +373,18 @@ fn component_registration<'r>(registry: &'r TypeRegistry, key: &Expr) -> ParseRe
         .get_with_type_path(name)
         .or_else(|| registry.get_with_short_type_path(name))
         .ok_or_else(|| {
-            error(ErrorKind::Type, key, format!("unknown or ambiguous type `{name}`; is it registered?"))
+            error(
+                ErrorKind::Type,
+                key,
+                format!("unknown or ambiguous type `{name}`; is it registered?"),
+            )
         })?;
     if registration.data::<ReflectComponent>().is_none() && registration.data::<ReflectRecipe>().is_none() {
-        return Err(error(ErrorKind::Type, key, format!(
-            "`{name}` is neither a component nor a recipe; add #[reflect(Component)] or #[reflect(Recipe)]"
-        )));
+        return Err(error(
+            ErrorKind::Type,
+            key,
+            format!("`{name}` is neither a component nor a recipe; add #[reflect(Component)] or #[reflect(Recipe)]"),
+        ));
     }
     Ok(registration)
 }

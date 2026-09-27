@@ -12,7 +12,10 @@ use rand::Rng;
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Stats { hp: u32, armor: u32 }
+struct Stats {
+    hp: u32,
+    armor: u32,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -20,7 +23,11 @@ struct Speed(f32);
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-enum Tint { #[default] Grey, Gold }
+enum Tint {
+    #[default]
+    Grey,
+    Gold,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -28,11 +35,16 @@ struct Points(u32);
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Bounty { gold: u32, gems: u32 }
+struct Bounty {
+    gold: u32,
+    gems: u32,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Ammo { bullet: Handle<ScenePatch> }
+struct Ammo {
+    bullet: Handle<ScenePatch>,
+}
 
 const N: usize = 20_000;
 
@@ -49,16 +61,29 @@ fn main() {
 
     let handles: Vec<Handle<ScenePatch>> = ["plain", "random", "full", "gun"]
         .iter()
-        .map(|label| app.world().resource::<AssetServer>().load(format!("bench.bp.ron#{label}")))
+        .map(|label| {
+            app.world()
+                .resource::<AssetServer>()
+                .load(format!("bench.bp.ron#{label}"))
+        })
         .collect();
     while !handles.iter().all(|h| {
-        app.world().resource::<Assets<ScenePatch>>().get(h).is_some_and(|p| p.resolved.is_some())
+        app.world()
+            .resource::<Assets<ScenePatch>>()
+            .get(h)
+            .is_some_and(|p| p.resolved.is_some())
     }) {
         app.update();
         std::thread::sleep(Duration::from_millis(1));
     }
     let resolved = |app: &App, h: &Handle<ScenePatch>| -> Arc<ResolvedSceneRoot> {
-        app.world().resource::<Assets<ScenePatch>>().get(h).unwrap().resolved.clone().unwrap()
+        app.world()
+            .resource::<Assets<ScenePatch>>()
+            .get(h)
+            .unwrap()
+            .resolved
+            .clone()
+            .unwrap()
     };
     let [plain, random, full, gun] = [0, 1, 2, 3].map(|i| resolved(&app, &handles[i]));
 
@@ -70,7 +95,13 @@ fn main() {
     let world = app.world_mut();
     println!("{N} spawns each (release build), best of 5 runs\n");
     bench(world, "Rust: world.spawn((5 components))", |world| {
-        world.spawn((Name::new("Bullet"), Speed(500.0), Stats { hp: 10, armor: 2 }, Tint::Gold, Points(3)));
+        world.spawn((
+            Name::new("Bullet"),
+            Speed(500.0),
+            Stats { hp: 10, armor: 2 },
+            Tint::Gold,
+            Points(3),
+        ));
     });
     bench(world, "Rust: same with 3 random values", |world| {
         let mut rng = rand::rng();
@@ -78,7 +109,10 @@ fn main() {
         world.spawn((
             Name::new("Bullet"),
             Speed(rng.random_range(1.0..=1000.0)),
-            Stats { hp: rng.random_range(1..=100), armor: 2 },
+            Stats {
+                hp: rng.random_range(1..=100),
+                armor: 2,
+            },
             tint,
             Points(3),
         ));
@@ -166,5 +200,9 @@ fn bench(world: &mut World, name: &str, mut spawn: impl FnMut(&mut World)) {
         }
     }
     let per_spawn = best.as_nanos() as f64 / N as f64;
-    println!("{name:48} {:>8.2} ms  {:>7.0} ns/spawn", best.as_secs_f64() * 1000.0, per_spawn);
+    println!(
+        "{name:48} {:>8.2} ms  {:>7.0} ns/spawn",
+        best.as_secs_f64() * 1000.0,
+        per_spawn
+    );
 }

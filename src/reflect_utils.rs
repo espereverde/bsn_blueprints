@@ -4,10 +4,7 @@ use bevy::reflect::{PartialReflect, Reflect, ReflectFromReflect, ReflectRef, Typ
 
 use crate::error::{BlueprintError, ErrorKind};
 
-pub(crate) fn clone_value(
-    registry: &TypeRegistry,
-    value: &dyn Reflect,
-) -> Result<Box<dyn Reflect>, BlueprintError> {
+pub(crate) fn clone_value(registry: &TypeRegistry, value: &dyn Reflect) -> Result<Box<dyn Reflect>, BlueprintError> {
     if let Ok(clone) = value.reflect_clone() {
         return Ok(clone);
     }
@@ -72,8 +69,7 @@ pub(crate) fn join_path(path: &str, segment: &str) -> String {
 
 /// True if one path is the other or contains it (`""` is the whole value).
 pub(crate) fn paths_overlap(a: &str, b: &str) -> bool {
-    let contains = |outer: &str, inner: &str| {
-        outer.is_empty() || inner == outer || inner.starts_with(&format!("{outer}."))
-    };
+    let contains =
+        |outer: &str, inner: &str| outer.is_empty() || inner == outer || inner.starts_with(&format!("{outer}."));
     contains(a, b) || contains(b, a)
 }

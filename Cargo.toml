@@ -2,6 +2,13 @@
 name = "bsn_blueprints"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.95"
+description = "Data-driven Bevy entities in RON files: inheritance, references and per-spawn randomness, built on Bevy scenes"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/espereverde/bsn_blueprints"
+readme = "README.md"
+keywords = ["bevy", "gamedev", "blueprints", "prefabs", "ron"]
+categories = ["game-development"]
 
 [dependencies]
 bevy = { version = "0.19", default-features = false, features = ["std", "bevy_asset", "bevy_scene", "bevy_state", "bevy_log", "file_watcher", "serialize"] }

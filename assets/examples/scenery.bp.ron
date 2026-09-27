@@ -1,0 +1,10 @@
+// Scenery for `cargo run --example armory`.
+{
+    "rock": (
+        components: {
+            "Name": "Rock",
+            "Size": (Range(1.0, 3.0)),
+            "Tint": OneOf([Weight(4, Red), Green]),
+        },
+    ),
+}

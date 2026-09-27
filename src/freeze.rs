@@ -21,8 +21,9 @@ impl BlueprintComponent {
             let handle = freeze_to_scene(&frozen.node, registry, world)?;
             *value
                 .path_mut::<Handle<ScenePatch>>(frozen.path.as_str())
-                .map_err(|e| BlueprintError::new(ErrorKind::Reference, format!("frozen field `{}`: {e}", frozen.path)))? =
-                handle;
+                .map_err(|e| {
+                    BlueprintError::new(ErrorKind::Reference, format!("frozen field `{}`: {e}", frozen.path))
+                })? = handle;
         }
         for blueprint_ref in &self.refs {
             blueprint_ref.fill(&mut *value, world)?;

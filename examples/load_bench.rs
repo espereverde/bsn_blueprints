@@ -8,7 +8,10 @@ use bsn_blueprints::{BlueprintFile, BlueprintPlugin};
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Stats { hp: u32, armor: u32 }
+struct Stats {
+    hp: u32,
+    armor: u32,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -16,7 +19,12 @@ struct Speed(f32);
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-enum Tint { #[default] Grey, Gold, Custom(u8) }
+enum Tint {
+    #[default]
+    Grey,
+    Gold,
+    Custom(u8),
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
@@ -24,20 +32,34 @@ struct Points(u32);
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Bounty { gold: u32, gems: u32 }
+struct Bounty {
+    gold: u32,
+    gems: u32,
+}
 
 #[derive(Component, Reflect, Default, Clone)]
 #[reflect(Component, Default)]
-struct Placement { offset: Offset, layer: u8 }
+struct Placement {
+    offset: Offset,
+    layer: u8,
+}
 
 #[derive(Reflect, Default, Clone)]
 #[reflect(Default)]
-struct Offset { x: f32, y: f32 }
+struct Offset {
+    x: f32,
+    y: f32,
+}
 
 /// One blueprint: inheritance, random values, random sets, and fixed and random children.
 fn blueprint(i: usize) -> String {
-    let extends = if i % 10 == 0 { String::new() } else { format!("extends: \"#bp_{}\",", i - 1) };
-    format!(r#"
+    let extends = if i.is_multiple_of(10) {
+        String::new()
+    } else {
+        format!("extends: \"#bp_{}\",", i - 1)
+    };
+    format!(
+        r#"
     "bp_{i}": (
         {extends}
         components: [
@@ -55,11 +77,18 @@ fn blueprint(i: usize) -> String {
             "turret": ( components: {{ "Name": "Turret", "Stats": (hp: 3, armor: 1) }} ),
             "light": Maybe(0.5, ( components: {{ "Name": "Light" }} )),
         }},
-    ),"#, armor = i % 7, speed = i % 50, custom = i % 255)
+    ),"#,
+        armor = i % 7,
+        speed = i % 50,
+        custom = i % 255
+    )
 }
 
 fn main() {
-    println!("{:>6} {:>9} {:>11} {:>12} {:>13} {:>14}", "blueprints", "file", "ron2 parse", "ron parse", "full load", "per blueprint");
+    println!(
+        "{:>6} {:>9} {:>11} {:>12} {:>13} {:>14}",
+        "blueprints", "file", "ron2 parse", "ron parse", "full load", "per blueprint"
+    );
     // Sizes from the command line, e.g. `load_bench 100 1000`.
     let sizes: Vec<usize> = std::env::args().skip(1).map(|a| a.parse().expect("size")).collect();
     for n in sizes {
@@ -83,7 +112,12 @@ fn main() {
             load_all(&file, n);
             let elapsed = start.elapsed();
             load = load.min(elapsed);
-            eprintln!("[{n}] load {run}: {:.1} ms, peak so far {} MB, current {} MB", ms(elapsed), rss_mb(), current_mb());
+            eprintln!(
+                "[{n}] load {run}: {:.1} ms, peak so far {} MB, current {} MB",
+                ms(elapsed),
+                rss_mb(),
+                current_mb()
+            );
         }
 
         println!(
@@ -122,7 +156,11 @@ fn load_all(file: &str, n: usize) {
         let patches = app.world().resource::<Assets<ScenePatch>>();
         if let Some(loaded) = files.get(&root) {
             assert_eq!(loaded.labels().count(), n);
-            if loaded.labels().all(|l| patches.get(loaded.get(l).unwrap()).is_some_and(|p| p.resolved.is_some())) {
+            if loaded.labels().all(|l| {
+                patches
+                    .get(loaded.get(l).unwrap())
+                    .is_some_and(|p| p.resolved.is_some())
+            }) {
                 return;
             }
         }

@@ -1,0 +1,42 @@
+// Turrets and their bullets, for `cargo run --example armory`.
+{
+    // Every bullet rolls its own speed, damage, tint and (half the time) a trail.
+    "bullet": (
+        components: {
+            "Name": "Bullet",
+            "Bullet": (speed: Range(200.0, 400.0), damage: OneOf([1, Weight(3, 2), 5])),
+            "Tint": OneOf([Red, Green, Blue]),
+        },
+        children: {
+            "trail": Maybe(0.5, ( components: { "Name": "Trail" } )),
+        },
+    ),
+
+    // A recipe turns the fire rate into the gun's timer. `Path("#bullet")`: every shot is a new
+    // random bullet.
+    "turret": (
+        components: {
+            "Name": "Turret",
+            "GunRecipe": (bullet: Path("#bullet"), shots_per_second: 2.0),
+        },
+    ),
+
+    // Same gun, but `Frozen`: the bullet's random choices are made once, when the turret spawns,
+    // so every shot of this turret is identical (and another steady turret has its own).
+    "steady_turret": (
+        extends: "#turret",
+        components: {
+            "Name": "Steady turret",
+            "GunRecipe": (bullet: Frozen(Path("#bullet"))),
+        },
+    ),
+
+    // Only the fire rate changes; the bullet is inherited.
+    "fast_turret": (
+        extends: "#turret",
+        components: {
+            "Name": "Fast turret",
+            "GunRecipe": (shots_per_second: 5.0),
+        },
+    ),
+}

@@ -194,6 +194,8 @@ pub struct Blueprints<T: Send + Sync + 'static> {
 }
 
 impl<T: Send + Sync + 'static> Blueprints<T> {
+    /// Wraps a file handle. [`BlueprintLoadingPlugin`] creates these; this is for setting one
+    /// up without it (e.g. in tests).
     pub fn new(file: Handle<BlueprintFile>) -> Self {
         Self {
             file,
@@ -201,6 +203,7 @@ impl<T: Send + Sync + 'static> Blueprints<T> {
         }
     }
 
+    /// The file's handle (also available through `Deref`).
     pub fn handle(&self) -> &Handle<BlueprintFile> {
         &self.file
     }
@@ -343,7 +346,9 @@ fn start_loading<S: FreelyMutableState>(
     mut progress: ResMut<BlueprintLoadingProgress<S>>,
     server: Res<AssetServer>,
 ) {
-    let Some(plan) = plans.plan_mut(state.get()) else { return };
+    let Some(plan) = plans.plan_mut(state.get()) else {
+        return;
+    };
     let mut total = 0;
     for group in &mut plan.groups {
         let mut handles = Vec::with_capacity(group.files.len());
@@ -356,10 +361,7 @@ fn start_loading<S: FreelyMutableState>(
         total += group.files.len();
         (group.insert)(&mut commands, handles);
     }
-    progress.counts = Counts {
-        total,
-        ..default()
-    };
+    progress.counts = Counts { total, ..default() };
 }
 
 fn check_loading<S: FreelyMutableState>(
@@ -369,7 +371,9 @@ fn check_loading<S: FreelyMutableState>(
     mut next_state: ResMut<NextState<S>>,
     server: Res<AssetServer>,
 ) {
-    let Some(plan) = plans.plan_mut(state.get()) else { return };
+    let Some(plan) = plans.plan_mut(state.get()) else {
+        return;
+    };
     let mut now = Counts::default();
     for file in plan.groups.iter_mut().flat_map(|group| &mut group.files) {
         now.total += 1;

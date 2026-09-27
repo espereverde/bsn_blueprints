@@ -19,14 +19,20 @@ pub(crate) enum RandomSpec {
 impl RandomSpec {
     pub(crate) fn range(min: f64, max: f64) -> Result<Self, BlueprintError> {
         if min > max {
-            return Err(BlueprintError::new(ErrorKind::Random, format!("Range({min}, {max}): min > max")));
+            return Err(BlueprintError::new(
+                ErrorKind::Random,
+                format!("Range({min}, {max}): min > max"),
+            ));
         }
         Ok(Self::Range(min, max))
     }
 
     pub(crate) fn pick(options: Vec<(f64, Box<dyn PartialReflect>)>) -> Result<Self, BlueprintError> {
         if options.is_empty() {
-            return Err(BlueprintError::new(ErrorKind::Random, "OneOf(..) needs at least one option"));
+            return Err(BlueprintError::new(
+                ErrorKind::Random,
+                "OneOf(..) needs at least one option",
+            ));
         }
         Ok(Self::Pick(options))
     }
@@ -60,7 +66,8 @@ impl RandomField {
 
     /// Sets the field in `component` to a new random value.
     pub(crate) fn apply(&self, component: &mut dyn Reflect) -> Result<(), BlueprintError> {
-        let error = |e: &dyn Display| BlueprintError::new(ErrorKind::Random, format!("random field `{}`: {e}", self.path));
+        let error =
+            |e: &dyn Display| BlueprintError::new(ErrorKind::Random, format!("random field `{}`: {e}", self.path));
         let field = match &self.parsed {
             None => component.as_partial_reflect_mut(),
             Some(parsed) => component.reflect_path_mut(&**parsed).map_err(|e| error(&e))?,
@@ -69,20 +76,13 @@ impl RandomField {
             RandomSpec::Range(min, max) => {
                 set_random_number(field, *min, *max, &mut rand::rng()).map_err(|e| error(&e))?
             }
-            RandomSpec::Pick(options) => field
-                .try_apply(&**choose_weighted(options))
-                .map_err(|e| error(&e))?,
+            RandomSpec::Pick(options) => field.try_apply(&**choose_weighted(options)).map_err(|e| error(&e))?,
         }
         Ok(())
     }
 }
 
-fn set_random_number(
-    field: &mut dyn PartialReflect,
-    min: f64,
-    max: f64,
-    rng: &mut impl Rng,
-) -> Result<(), String> {
+fn set_random_number(field: &mut dyn PartialReflect, min: f64, max: f64, rng: &mut impl Rng) -> Result<(), String> {
     macro_rules! try_number {
         ($($ty:ty),*) => {$(
             if let Some(value) = field.try_downcast_mut::<$ty>() {
